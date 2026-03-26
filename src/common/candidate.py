@@ -33,7 +33,10 @@ class NanobodyCandidate:
     # --- Biophysics Judge Metrics (TNP) ---
     psh_score: Optional[float] = None
     ppc_score: Optional[float] = None
+    pnc_score: Optional[float] = None
     compactness: Optional[float] = None
+    cdr_length: Optional[int] = None
+    cdr3_length: Optional[int] = None
     biophysics_verdict: Optional[str] = None
 
     # --- Physics Judge Metrics (Rosetta) ---
@@ -62,7 +65,10 @@ class NanobodyCandidate:
             # Biophysics
             "psh_score": self.psh_score,
             "ppc_score": self.ppc_score,
+            "pnc_score": self.pnc_score,
             "compactness": self.compactness,
+            "cdr_length": self.cdr_length,
+            "cdr3_length": self.cdr3_length,
             "biophysics_verdict": self.biophysics_verdict,
             # Physics
             "delta_g": self.delta_g,

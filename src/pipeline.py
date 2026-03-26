@@ -2,8 +2,13 @@
 
 Runs VHH candidate sequences through the multi-judge evaluation:
   Phase 1: 1D sequence annotation + deterministic pre-filter
-  Phase 2: 3D structure generation (placeholder — uses pre-folded PDBs)
-  Phase 3: Parallel multi-judge evaluation (Biology → Biophysics → Physics)
+  Phase 2: TNP batch (NanoBodyBuilder2 folding + biophysics metrics)
+  Phase 3: Multi-judge evaluation (Biology → Biophysics → Physics)
+
+TNP serves as both the folder and the biophysics analyzer, enforcing
+the "Fold Once, Judge Many" architecture.  The PDB structures it
+generates are shared with the Biology Judge (SAP) and Physics Judge
+(Rosetta, future).
 
 Outputs a Parquet file with per-candidate verdicts for DPO pair construction.
 """
@@ -14,9 +19,12 @@ from pathlib import Path
 import pandas as pd
 
 from src.common.candidate import NanobodyCandidate
+from src.common.config import Config
 from src.common.pdb_utils import load_structure
 from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
+from src.biophysics_judge.tnp_runner import run_tnp_batch
+from src.biophysics_judge.judge import BiophysicsJudge
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,7 @@ def run_pipeline(
     sequences: list[dict[str, str]],
     structures_dir: Path = STRUCTURES_DIR,
     results_dir: Path = RESULTS_DIR,
+    tnp_ncores: int = Config.TNP_NCORES,
 ) -> pd.DataFrame:
     """Run the full evaluation pipeline on a list of sequences.
 
@@ -37,58 +46,93 @@ def run_pipeline(
                    Optionally "pdb_filepath" if the structure is pre-folded.
         structures_dir: Directory where PDB files are stored/expected.
         results_dir: Directory where the output Parquet will be written.
+        tnp_ncores: Number of CPU cores for TNP to use.
 
     Returns:
         DataFrame with one row per candidate and all judge verdicts.
     """
     results_dir.mkdir(parents=True, exist_ok=True)
-    biology_judge = BiologyJudge()
     candidates: list[NanobodyCandidate] = []
 
+    # ── Phase 1: 1D Sequence Pre-filter ──
     for seq_record in sequences:
         candidate = NanobodyCandidate(
             candidate_id=seq_record["candidate_id"],
             raw_sequence=seq_record["raw_sequence"],
             pdb_filepath=seq_record.get("pdb_filepath"),
         )
-
-        # ── Phase 1: 1D Sequence Pre-filter ──
         annotate_and_filter(candidate)
+        candidates.append(candidate)
 
+    # Separate absolute failures from candidates needing 3D evaluation
+    foldable = [c for c in candidates if c.is_valid]
+    logger.info(
+        "Phase 1 complete: %d/%d candidates proceed to folding.",
+        len(foldable),
+        len(candidates),
+    )
+
+    # ── Phase 2: TNP Batch (fold + biophysics metrics) ──
+    if foldable:
+        tnp_output_dir = results_dir / "tnp_output"
+        tnp_results = run_tnp_batch(
+            sequences=[
+                {"id": c.candidate_id, "sequence": c.raw_sequence}
+                for c in foldable
+            ],
+            output_dir=tnp_output_dir,
+            ncores=tnp_ncores,
+        )
+
+        # Populate candidates with TNP results
+        for candidate in foldable:
+            result = tnp_results.get(candidate.candidate_id)
+            if result is None:
+                logger.warning(
+                    "Candidate %s: TNP produced no result, skipping 3D evaluation.",
+                    candidate.candidate_id,
+                )
+                continue
+
+            candidate.psh_score = result.psh
+            candidate.ppc_score = result.ppc
+            candidate.pnc_score = result.pnc
+            candidate.compactness = result.compactness
+            candidate.cdr_length = result.cdr_length
+            candidate.cdr3_length = result.cdr3_length
+
+            # Use TNP-generated PDB (prefer over any pre-existing path)
+            if result.pdb_path:
+                candidate.pdb_filepath = result.pdb_path
+
+    # ── Phase 3: Multi-Judge Evaluation ──
+    biology_judge = BiologyJudge()
+    biophysics_judge = BiophysicsJudge()
+
+    for candidate in foldable:
         if not candidate.is_valid:
-            # Absolute failure (e.g. W47) — skip folding entirely
-            candidates.append(candidate)
             continue
 
-        # ── Phase 2: Load 3D Structure ──
-        # For now, expects pre-folded PDB files. NanoBodyBuilder2
-        # integration will replace this with on-the-fly folding.
-        pdb_path = _resolve_pdb_path(candidate, structures_dir)
-        if pdb_path is None:
-            # No structure available — can't run 3D judges
+        # Biology Judge: localized SAP on conditional flags
+        if candidate.pdb_filepath:
+            structure = load_structure(
+                candidate.pdb_filepath, candidate.candidate_id
+            )
+            biology_judge.evaluate(candidate, structure)
+        elif candidate.biology_flags:
+            # Has conditional flags but no PDB — can't resolve them
             logger.warning(
-                "Candidate %s: no PDB found, skipping 3D evaluation.",
+                "Candidate %s: conditional flags but no PDB, biology verdict deferred.",
                 candidate.candidate_id,
             )
-            candidates.append(candidate)
-            continue
 
-        candidate.pdb_filepath = str(pdb_path)
-        structure = load_structure(str(pdb_path), candidate.candidate_id)
-
-        # ── Phase 3: Multi-Judge Evaluation ──
-        # Biology Judge
-        biology_judge.evaluate(candidate, structure)
-
-        # Biophysics Judge (TNP) — placeholder
-        # biophysics_judge.evaluate(candidate, structure)
+        # Biophysics Judge: threshold check on TNP metrics
+        biophysics_judge.evaluate(candidate)
 
         # Physics Judge (Rosetta) — placeholder
         # physics_judge.evaluate(candidate, structure)
 
-        candidates.append(candidate)
-
-    # Serialize results
+    # ── Serialize results ──
     df = pd.DataFrame([c.to_dict() for c in candidates])
     output_path = results_dir / "judge_verdicts.parquet"
     df.to_parquet(output_path, index=False)

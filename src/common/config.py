@@ -26,11 +26,17 @@ class Config:
     CDR3_HYDROPHOBIC_RESIDUES: set[str] = {"W", "F"}
 
     # ── Biophysics Judge (TNP) ──
+    # PSH: strict green zone (Gordon et al., 36 clinical nanobodies)
     PSH_GREEN_LOW: float = 79.59
     PSH_GREEN_HIGH: float = 126.83
+    # PSH: extended amber/red boundaries (for logging/reporting)
+    PSH_RED_LOW: float = 73.4
+    PSH_RED_HIGH: float = 155.47
     PPC_MAX: float = 0.39
     COMPACTNESS_LOW: float = 0.81
     COMPACTNESS_HIGH: float = 1.57
+    # TNP runtime
+    TNP_NCORES: int = 1
 
     # ── Physics Judge (Rosetta) ──
     DELTA_G_REJECT: float = -2.0   # > -2.0 REU → non-binder "Rock"
