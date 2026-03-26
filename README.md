@@ -61,9 +61,9 @@ Runs entirely on the 1D amino acid sequence. No folding required.
 
 Sequences with **no flags** pass the Biology Judge immediately (no folding needed). Sequences with **conditional flags** proceed to Phase 2 for structural resolution.
 
-### Phase 2 — 3D Structure Generation
+### Phase 2 — 3D Structure Generation (via TNP)
 
-Sequences that need structural evaluation are folded using **NanoBodyBuilder2** (not yet integrated — currently expects pre-folded PDB files). The structure is generated once and shared across all judges.
+Non-rejected sequences are folded using **NanoBodyBuilder2** through the **TNP** (Therapeutic Nanobody Profiler) pipeline. TNP serves as both the folder and the biophysics analyzer — it folds the sequence and computes all surface metrics (PSH, PPC, PNC, Compactness, CDR lengths) in a single pass. The resulting PDB is shared across all judges, enforcing the "Fold Once, Judge Many" principle.
 
 ### Phase 3 — Multi-Judge Evaluation
 
@@ -108,16 +108,34 @@ Each judge independently evaluates the folded structure and writes its verdict t
 
 ## Biophysics Judge (TNP)
 
-**Status: Not yet implemented**
+**Status: Implemented**
 
-**Purpose:** Evaluates global surface properties using metrics from the Therapeutic Nanobody Profiler.
+**Purpose:** Evaluates clinical developability via global surface properties using the [Therapeutic Nanobody Profiler](https://github.com/oxpig/TNP) (Gordon et al.), calibrated against 36 clinical-stage nanobody therapeutics.
 
-**Planned metrics and thresholds:**
-| Metric | Safe range | Meaning |
-|--------|-----------|---------|
-| PSH (Patches of Surface Hydrophobicity) | 79.59 – 126.83 | Too high → sticky surface |
-| PPC (Positive Patch Charge) | < 0.39 | Too high → non-specific binding |
-| Compactness | 0.81 – 1.57 | Outside range → structural instability |
+**Method:** TNP computes 6 metrics from the folded structure. Three are used for rejection (strict green zone), three are stored for analysis:
+
+| Metric | Safe range | Rejection | Meaning |
+|--------|-----------|-----------|---------|
+| PSH (Patches of Surface Hydrophobicity) | 79.59 – 126.83 | Yes | Too high → aggregation; too low → unfolded |
+| PPC (Positive Patch Charge) | < 0.39 | Yes | Too high → non-specific binding, rapid clearance |
+| Compactness (CDR3 loop geometry) | 0.81 – 1.57 | Yes | Too low → flailing loop; too high → steric strain |
+| PNC (Patches of Negative Charge) | — | No (stored) | Informational |
+| Total CDR Length | — | No (stored) | Informational |
+| CDR3 Length | — | No (stored) | Informational |
+
+**Decision flow:**
+| Condition | Verdict |
+|-----------|---------|
+| PSH outside [79.59, 126.83] | `fail_psh` |
+| PPC > 0.39 | `fail_ppc` |
+| Compactness outside [0.81, 1.57] | `fail_compactness` |
+| All metrics in range | `pass` |
+
+**Code:** `src/biophysics_judge/`
+| File | Role |
+|------|------|
+| `tnp_runner.py` | TNP CLI subprocess execution + JSON/PDB output parsing |
+| `judge.py` | BiophysicsJudge: threshold checks on TNP metrics |
 
 ---
 
@@ -200,9 +218,11 @@ src/
 │   ├── sequence_filter.py   # Phase 1: Kabat numbering + flag assignment
 │   ├── sap_calculator.py    # Localized SAP computation
 │   └── judge.py             # Biology Judge orchestrator
-├── biophysics_judge/        # Placeholder
+├── biophysics_judge/
+│   ├── tnp_runner.py        # TNP CLI subprocess + JSON/PDB output parsing
+│   └── judge.py             # BiophysicsJudge: threshold checks on TNP metrics
 ├── physics_judge/           # Placeholder
-└── pipeline.py              # Top-level orchestrator: filter → fold → judge → Parquet
+└── pipeline.py              # Top-level orchestrator: filter → TNP fold → judge → Parquet
 data/
 ├── structures/              # PDB files keyed by candidate_id
 ├── datasets/                # Input CSVs (ANDD, SAbDab)
@@ -211,24 +231,75 @@ data/
 
 ---
 
-## Setup
+## Setup (Snellius)
 
-### Download ANDD dataset
+### 1. Create Python virtual environment
+
 ```bash
-wget -O ANDD_pdb.zip "https://zenodo.org/records/18151718/files/ANDD_pdb.zip?download=1"
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+
+python -m venv /projects/0/hpmlprjs/interns/krijn/venvs/DPO
+source /projects/0/hpmlprjs/interns/krijn/venvs/DPO/bin/activate
+pip install --upgrade pip
 ```
 
-### Download SAbDab nanobody summary
+### 2. Install TNP (Therapeutic Nanobody Profiler)
+
+TNP handles both NanoBodyBuilder2 folding and biophysics metric computation.
+
 ```bash
-wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/ -O sabdab_nano_summary.tsv
+cd /projects/0/hpmlprjs/interns/krijn/tools/
+git clone https://github.com/oxpig/TNP.git
+cd TNP
+pip install .
+
+# Verify
+which TNP
+TNP --help
 ```
 
-### Install PyRosetta
-```bash
-python -m venv /projects/0/hpmlprjs/interns/krijn/venvs/rosetta
+This installs TNP and its dependencies (ImmuneBuilder/NanoBodyBuilder2, ANARCI, BioPython).
 
+### 3. Install DSSP (required by TNP)
+
+DSSP must be built from source on Snellius since there is no pip package. Requires GCC 13+ for C++20 support.
+
+```bash
+# Load the compiler (GCC 13.3.0 — must match the Python toolchain)
+module purge
+module load 2024
+module load GCCcore/13.3.0
+
+# Clone and build
+cd /projects/0/hpmlprjs/interns/krijn/tools/
+git clone https://github.com/PDB-REDO/dssp.git
+cd dssp
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$VIRTUAL_ENV
+cmake --build build
+cmake --install build
+
+# Verify
+which mkdssp
+mkdssp --version
+```
+
+### 4. Install PyRosetta (for Physics Judge — future)
+
+```bash
 pip install pyrosetta \
   --find-links https://graylab.jhu.edu/download/PyRosetta4/archive/release-quarterly/release
+```
+
+### 5. Download datasets
+
+```bash
+# ANDD dataset
+wget -O ANDD_pdb.zip "https://zenodo.org/records/18151718/files/ANDD_pdb.zip?download=1"
+
+# SAbDab nanobody summary
+wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/ -O sabdab_nano_summary.tsv
 ```
 
 ---
