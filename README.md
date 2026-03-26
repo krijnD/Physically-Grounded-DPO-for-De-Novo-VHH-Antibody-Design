@@ -264,7 +264,7 @@ This installs TNP and its dependencies (ImmuneBuilder/NanoBodyBuilder2, ANARCI, 
 
 ### 3. Install DSSP (required by TNP)
 
-DSSP must be built from source on Snellius since there is no pip package. Requires GCC 13+ for C++20 support.
+DSSP must be built from source on Snellius. It requires GCC 13+ (C++20) and a recent SQLite (the system SQLite is too old), both built into the venv.
 
 ```bash
 # Load the compiler (GCC 13.3.0 — must match the Python toolchain)
@@ -272,11 +272,24 @@ module purge
 module load 2024
 module load GCCcore/13.3.0
 
-# Clone and build
+# 3a. Build SQLite from source (Snellius system version is too old for DSSP)
+cd /projects/0/hpmlprjs/interns/krijn/tools/
+wget https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz
+tar xzf sqlite-autoconf-3460000.tar.gz
+cd sqlite-autoconf-3460000
+./configure --prefix=$VIRTUAL_ENV
+make
+make install
+
+# 3b. Clone and build DSSP, pointing to the venv's SQLite
 cd /projects/0/hpmlprjs/interns/krijn/tools/
 git clone https://github.com/PDB-REDO/dssp.git
 cd dssp
-cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$VIRTUAL_ENV
+cmake -S . -B build \
+  -DCMAKE_INSTALL_PREFIX=$VIRTUAL_ENV \
+  -DCMAKE_PREFIX_PATH=$VIRTUAL_ENV \
+  -DSQLite3_INCLUDE_DIR=$VIRTUAL_ENV/include \
+  -DSQLite3_LIBRARY=$VIRTUAL_ENV/lib/libsqlite3.so
 cmake --build build
 cmake --install build
 
