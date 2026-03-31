@@ -25,6 +25,7 @@ from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
 from src.biophysics_judge.tnp_runner import run_tnp_batch
 from src.biophysics_judge.judge import BiophysicsJudge
+from src.physics_judge.judge import PhysicsJudge
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ def run_pipeline(
     # ── Phase 3: Multi-Judge Evaluation ──
     biology_judge = BiologyJudge()
     biophysics_judge = BiophysicsJudge()
+    physics_judge = PhysicsJudge()
 
     for candidate in foldable:
         if not candidate.is_valid:
@@ -129,8 +131,8 @@ def run_pipeline(
         # Biophysics Judge: threshold check on TNP metrics
         biophysics_judge.evaluate(candidate)
 
-        # Physics Judge (Rosetta) — placeholder
-        # physics_judge.evaluate(candidate, structure)
+        # Physics Judge: Rosetta energy decomposition (E_Rep + delta_G)
+        physics_judge.evaluate(candidate)
 
     # ── Serialize results ──
     df = pd.DataFrame([c.to_dict() for c in candidates])
