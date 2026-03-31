@@ -41,3 +41,7 @@ class Config:
     # ── Physics Judge (Rosetta) ──
     DELTA_G_REJECT: float = -2.0   # > -2.0 REU → non-binder "Rock"
     E_REP_REJECT: float = 5.0      # > 5.0 REU → steric clash
+    ROSETTA_INTERFACE: str = "H_A"  # Chain interface for InterfaceAnalyzerMover
+    CCD_OUTER_CYCLES: int = 1      # AbDPO-specified LoopMover_Refine_CCD param
+    CCD_MAX_INNER_CYCLES: int = 10  # AbDPO-specified LoopMover_Refine_CCD param
+    PYROSETTA_FLAGS: str = "-mute all -ignore_unrecognized_res"
