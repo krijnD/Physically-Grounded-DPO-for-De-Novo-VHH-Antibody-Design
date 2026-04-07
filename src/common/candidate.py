@@ -21,6 +21,9 @@ class NanobodyCandidate:
 
     # --- 3D Structural State ---
     pdb_filepath: Optional[str] = None
+    complex_pdb_path: Optional[str] = None   # PDB containing nanobody + antigen
+    nanobody_chain_id: Optional[str] = None  # chain ID of nanobody in the complex
+    antigen_chain_ids: Optional[str] = None  # chain ID(s) of antigen (e.g. "A" or "AB")
 
     # --- Global Status ---
     is_valid: bool = True
@@ -56,6 +59,9 @@ class NanobodyCandidate:
             "raw_sequence": self.raw_sequence,
             "cdr3_sequence": self.cdr3_sequence,
             "pdb_filepath": self.pdb_filepath,
+            "complex_pdb_path": self.complex_pdb_path,
+            "nanobody_chain_id": self.nanobody_chain_id,
+            "antigen_chain_ids": self.antigen_chain_ids,
             "is_valid": self.is_valid,
             "failure_reason": self.failure_reason,
             # Biology

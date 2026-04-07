@@ -61,6 +61,9 @@ def run_pipeline(
             candidate_id=seq_record["candidate_id"],
             raw_sequence=seq_record["raw_sequence"],
             pdb_filepath=seq_record.get("pdb_filepath"),
+            complex_pdb_path=seq_record.get("complex_pdb_path"),
+            nanobody_chain_id=seq_record.get("nanobody_chain_id"),
+            antigen_chain_ids=seq_record.get("antigen_chain_ids"),
         )
         annotate_and_filter(candidate)
         candidates.append(candidate)
@@ -132,7 +135,21 @@ def run_pipeline(
         biophysics_judge.evaluate(candidate)
 
         # Physics Judge: Rosetta energy decomposition (E_Rep + delta_G)
-        physics_judge.evaluate(candidate)
+        if candidate.complex_pdb_path:
+            nb_chain = candidate.nanobody_chain_id or "H"
+            ag_chains = candidate.antigen_chain_ids or "A"
+            interface = f"{nb_chain}_{ag_chains}"
+            physics_judge.evaluate(
+                candidate,
+                complex_pdb_path=candidate.complex_pdb_path,
+                nanobody_chain_id=nb_chain,
+                interface=interface,
+            )
+        else:
+            logger.debug(
+                "Candidate %s: no complex PDB, skipping physics evaluation.",
+                candidate.candidate_id,
+            )
 
     # ── Serialize results ──
     df = pd.DataFrame([c.to_dict() for c in candidates])

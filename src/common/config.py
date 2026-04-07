@@ -45,3 +45,10 @@ class Config:
     CCD_OUTER_CYCLES: int = 1      # AbDPO-specified LoopMover_Refine_CCD param
     CCD_MAX_INNER_CYCLES: int = 10  # AbDPO-specified LoopMover_Refine_CCD param
     PYROSETTA_FLAGS: str = "-mute all -ignore_unrecognized_res"
+
+    # VHH CDR loop boundaries (Kabat numbering) for CCD refinement
+    VHH_CDR_RANGES: list[tuple[int, int]] = [
+        (26, 32),   # CDR H1
+        (52, 56),   # CDR H2
+        (95, 102),  # CDR H3
+    ]
