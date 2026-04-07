@@ -123,7 +123,8 @@ def run_pipeline(
             structure = load_structure(
                 candidate.pdb_filepath, candidate.candidate_id
             )
-            biology_judge.evaluate(candidate, structure)
+            chain_id = candidate.nanobody_chain_id or "A"
+            biology_judge.evaluate(candidate, structure, chain_id=chain_id)
         elif candidate.biology_flags:
             # Has conditional flags but no PDB — can't resolve them
             logger.warning(
