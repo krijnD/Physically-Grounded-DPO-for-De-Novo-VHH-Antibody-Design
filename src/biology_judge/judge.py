@@ -44,6 +44,7 @@ class BiologyJudge:
         self,
         candidate: NanobodyCandidate,
         structure: Structure,
+        chain_id: str = "A",
     ) -> NanobodyCandidate:
         """Run the Biology Judge on a candidate with a folded structure.
 
@@ -51,6 +52,8 @@ class BiologyJudge:
             candidate: Must have already passed through sequence_filter.
                        If already failed (is_valid=False), returns immediately.
             structure: Biopython Structure parsed from the candidate's PDB.
+            chain_id: Chain identifier of the nanobody in the PDB.
+                      Defaults to ``"A"`` (TNP monomer convention).
 
         Returns:
             The candidate with biology_verdict set.
@@ -71,6 +74,7 @@ class BiologyJudge:
                     structure,
                     target_res_id=target_res_id,
                     radius=self.sap_radius,
+                    chain_id=chain_id,
                 )
                 candidate.sap_scores[flag] = sap
 
