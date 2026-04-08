@@ -47,10 +47,17 @@ def annotate_and_filter(candidate: NanobodyCandidate) -> NanobodyCandidate:
         return candidate
 
     # Extract hallmark positions and CDR3
-    pos_37 = chain.get("37", default=None)
-    pos_44 = chain.get("44", default=None)
-    pos_45 = chain.get("45", default=None)
-    pos_47 = chain.get("47", default=None)
+    # abnumber.Chain uses bracket indexing; missing positions raise KeyError
+    def _get_position(ch, pos_id: str):
+        try:
+            return ch[pos_id]
+        except (KeyError, IndexError):
+            return None
+
+    pos_37 = _get_position(chain, "37")
+    pos_44 = _get_position(chain, "44")
+    pos_45 = _get_position(chain, "45")
+    pos_47 = _get_position(chain, "47")
     cdr3_seq = chain.cdr3_seq
 
     candidate.kabat_mapping = {
