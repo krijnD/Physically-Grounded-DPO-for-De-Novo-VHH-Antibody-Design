@@ -201,17 +201,18 @@ def refine_cdr_loops(
 # Energy computation
 # ---------------------------------------------------------------------------
 def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
-    """Compute the total fa_rep (steric repulsion) energy at the interface.
+    """Compute mean per-residue fa_rep (steric repulsion) at the interface.
 
-    Uses the ref2015 score function.  Sums per-residue fa_rep contributions
-    across all residues at the nanobody–antigen interface.
+    Uses the ref2015 score function.  Computes the average fa_rep across
+    all residues at the nanobody–antigen interface, matching the AbDPO
+    per-residue E_Rep metric (threshold: 5.0 REU).
 
     Args:
         pose: Scored or unscored PyRosetta Pose (will be scored in place).
         interface: Interface definition string (e.g. ``"H_A"``).
 
     Returns:
-        Total fa_rep energy in REU at the interface.
+        Mean per-residue fa_rep energy in REU at the interface.
     """
     import pyrosetta
     from pyrosetta.rosetta.core.scoring import ScoreType
@@ -241,12 +242,22 @@ def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
     energies = pose.energies()
     fa_rep_type = ScoreType.fa_rep
     total_fa_rep = 0.0
+    n_interface = 0
     for i in range(1, pose.total_residue() + 1):
         if interface_mask[i]:
             total_fa_rep += energies.residue_total_energies(i)[fa_rep_type]
+            n_interface += 1
 
-    logger.debug("E_Rep at interface %s: %.3f REU", interface, total_fa_rep)
-    return total_fa_rep
+    if n_interface == 0:
+        logger.warning("No interface residues found for %s — returning 0.0.", interface)
+        return 0.0
+
+    mean_fa_rep = total_fa_rep / n_interface
+    logger.info(
+        "E_Rep at interface %s: %.3f REU mean (%.3f total over %d residues)",
+        interface, mean_fa_rep, total_fa_rep, n_interface,
+    )
+    return mean_fa_rep
 
 
 def compute_delta_g(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
