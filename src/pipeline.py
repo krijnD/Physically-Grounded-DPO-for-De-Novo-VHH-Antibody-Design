@@ -155,7 +155,12 @@ def run_pipeline(
     # ── Serialize results ──
     df = pd.DataFrame([c.to_dict() for c in candidates])
     output_path = results_dir / "judge_verdicts.parquet"
-    df.to_parquet(output_path, index=False)
+    try:
+        df.to_parquet(output_path, index=False)
+    except ImportError:
+        output_path = output_path.with_suffix(".csv")
+        df.to_csv(output_path, index=False)
+        logger.warning("pyarrow not installed — wrote CSV instead.")
     logger.info("Wrote %d candidates to %s", len(df), output_path)
 
     return df
