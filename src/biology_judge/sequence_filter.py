@@ -33,13 +33,24 @@ def annotate_and_filter(candidate: NanobodyCandidate) -> NanobodyCandidate:
     Returns:
         The same candidate, annotated with flags or failed.
     """
+    logger.debug(
+        "Candidate %s: parsing %d-residue sequence (%.30s...)",
+        candidate.candidate_id,
+        len(candidate.raw_sequence),
+        candidate.raw_sequence,
+    )
     try:
         chain = Chain(
             candidate.raw_sequence,
             scheme="kabat",
+            chain_type="H",
             assign_germline=False,
         )
-    except ChainParseError:
+    except ChainParseError as e:
+        logger.warning(
+            "Candidate %s: ANARCI parse failed — %s (seq length=%d, first 30: %.30s)",
+            candidate.candidate_id, e, len(candidate.raw_sequence), candidate.raw_sequence,
+        )
         candidate.fail_candidate(
             "Phase 1: Severe hallucination — sequence lacks immunoglobulin topology."
         )
