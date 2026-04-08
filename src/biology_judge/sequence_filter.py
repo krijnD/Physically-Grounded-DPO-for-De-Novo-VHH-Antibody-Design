@@ -43,7 +43,6 @@ def annotate_and_filter(candidate: NanobodyCandidate) -> NanobodyCandidate:
         chain = Chain(
             candidate.raw_sequence,
             scheme="kabat",
-            chain_type="H",
             assign_germline=False,
         )
     except ChainParseError as e:
