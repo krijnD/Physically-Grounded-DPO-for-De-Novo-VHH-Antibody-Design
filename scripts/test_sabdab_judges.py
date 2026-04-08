@@ -100,7 +100,9 @@ def run_judges_on_entry(
 
     # ── Physics Judge ──
     if candidate.complex_pdb_path and ag_chains:
-        interface = f"{nb_chain}_{ag_chains}"
+        # SAbDab uses "A | C | B" format; PyRosetta needs "ACB"
+        ag_clean = ag_chains.replace(" ", "").replace("|", "")
+        interface = f"{nb_chain}_{ag_clean}"
         physics_judge.evaluate(
             candidate,
             complex_pdb_path=candidate.complex_pdb_path,

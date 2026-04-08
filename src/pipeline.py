@@ -139,7 +139,9 @@ def run_pipeline(
         if candidate.complex_pdb_path:
             nb_chain = candidate.nanobody_chain_id or "H"
             ag_chains = candidate.antigen_chain_ids or "A"
-            interface = f"{nb_chain}_{ag_chains}"
+            # SAbDab uses "A | C | B" format; PyRosetta needs "ACB"
+            ag_clean = ag_chains.replace(" ", "").replace("|", "")
+            interface = f"{nb_chain}_{ag_clean}"
             physics_judge.evaluate(
                 candidate,
                 complex_pdb_path=candidate.complex_pdb_path,
