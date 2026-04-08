@@ -200,11 +200,18 @@ def main():
     )
     logger.info("=" * 60)
 
-    # Save results
+    # Save results (Parquet preferred, CSV fallback if pyarrow missing)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
-    logger.info("Results written to %s", output_path)
+    try:
+        df.to_parquet(output_path, index=False)
+        logger.info("Results written to %s", output_path)
+    except ImportError:
+        csv_path = output_path.with_suffix(".csv")
+        df.to_csv(csv_path, index=False)
+        logger.warning(
+            "pyarrow not installed — wrote CSV instead: %s", csv_path
+        )
 
     # Also print a concise table to stdout
     cols = [
