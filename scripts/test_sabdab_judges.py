@@ -164,8 +164,10 @@ def main():
     physics_judge = PhysicsJudge()
 
     # Run all judges on each entry
+    total = len(entries)
     candidates: list[NanobodyCandidate] = []
-    for entry in entries:
+    for idx, entry in enumerate(entries, 1):
+        logger.info("[%d/%d] Starting %s ...", idx, total, entry["candidate_id"])
         candidate = run_judges_on_entry(
             entry, biology_judge, biophysics_judge, physics_judge
         )
