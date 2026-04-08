@@ -198,6 +198,44 @@ def refine_cdr_loops(
 
 
 # ---------------------------------------------------------------------------
+# Chain selector helpers
+# ---------------------------------------------------------------------------
+def _make_chain_selector(chains: str):
+    """Build a residue selector for one or more chain letters.
+
+    For a single chain (e.g. ``"A"``), returns a plain ``ChainSelector``.
+    For multiple chains (e.g. ``"ACB"``), tries comma-separated format
+    first (``ChainSelector("A,C,B")``), falling back to combining
+    individual selectors via ``OrResidueSelector``.
+
+    Args:
+        chains: One or more chain letters (e.g. ``"A"`` or ``"ACB"``).
+
+    Returns:
+        A residue selector covering all specified chains.
+    """
+    from pyrosetta.rosetta.core.select.residue_selector import (
+        ChainSelector,
+        OrResidueSelector,
+    )
+
+    if len(chains) <= 1:
+        return ChainSelector(chains)
+
+    # Try comma-separated format (supported in RosettaScripts XML)
+    try:
+        return ChainSelector(",".join(chains))
+    except Exception:
+        pass
+
+    # Fallback: combine via OrResidueSelector
+    selector = OrResidueSelector()
+    for ch in chains:
+        selector.add_residue_selector(ChainSelector(ch))
+    return selector
+
+
+# ---------------------------------------------------------------------------
 # Energy computation
 # ---------------------------------------------------------------------------
 def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
@@ -209,7 +247,7 @@ def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
 
     Args:
         pose: Scored or unscored PyRosetta Pose (will be scored in place).
-        interface: Interface definition string (e.g. ``"H_A"``).
+        interface: Interface definition string (e.g. ``"H_A"`` or ``"D_ACB"``).
 
     Returns:
         Mean per-residue fa_rep energy in REU at the interface.
@@ -218,7 +256,6 @@ def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
     from pyrosetta.rosetta.core.scoring import ScoreType
     from pyrosetta.rosetta.core.select.residue_selector import (
         InterGroupInterfaceByVectorSelector,
-        ChainSelector,
     )
 
     # Score the pose with ref2015
@@ -230,8 +267,8 @@ def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
     nb_chains = parts[0]
     ag_chains = parts[1] if len(parts) > 1 else ""
 
-    nb_selector = ChainSelector(nb_chains)
-    ag_selector = ChainSelector(ag_chains)
+    nb_selector = _make_chain_selector(nb_chains)
+    ag_selector = _make_chain_selector(ag_chains)
 
     interface_selector = InterGroupInterfaceByVectorSelector(
         nb_selector, ag_selector
@@ -268,25 +305,28 @@ def compute_delta_g(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
 
         delta_G = E_complex - (E_antibody + E_antigen)
 
+    Supports multi-chain antigens natively — InterfaceAnalyzerMover
+    accepts ``"D_ABC"`` format (concatenated chain letters per group).
+
     Args:
         pose: PyRosetta Pose of the complex (will be modified by the mover).
-        interface: Interface definition string (e.g. ``"H_A"``).
+        interface: Interface definition string (e.g. ``"H_A"`` or ``"D_ACB"``).
 
     Returns:
         Binding free energy (dG_separated) in REU.  More negative = tighter.
     """
+    import pyrosetta
     from pyrosetta.rosetta.protocols.analysis import InterfaceAnalyzerMover
 
-    iam = InterfaceAnalyzerMover()
-    iam.set_interface(interface)
+    sfxn = pyrosetta.create_score_function("ref2015")
+
+    iam = InterfaceAnalyzerMover(interface)
     iam.set_pack_separated(True)
-    iam.set_scorefunction(
-        __import__("pyrosetta").create_score_function("ref2015")
-    )
+    iam.set_scorefunction(sfxn)
     iam.apply(pose)
 
     dg = iam.get_interface_dG()
-    logger.debug("delta_G at interface %s: %.3f REU", interface, dg)
+    logger.info("delta_G at interface %s: %.3f REU", interface, dg)
     return dg
 
 
