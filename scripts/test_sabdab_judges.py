@@ -103,6 +103,15 @@ def run_judges_on_entry(
         # SAbDab uses "A | C | B" format; PyRosetta needs "ACB"
         ag_clean = ag_chains.replace(" ", "").replace("|", "")
         interface = f"{nb_chain}_{ag_clean}"
+
+        # Guard: lowercase chain IDs can crash PyRosetta at the C++ level
+        if nb_chain.islower() or any(c.islower() for c in ag_clean):
+            logger.warning(
+                "  Physics: skipped — lowercase chain ID(s) in '%s' "
+                "(known PyRosetta crash risk)", interface,
+            )
+            candidate.physics_verdict = "error"
+            return candidate
         physics_judge.evaluate(
             candidate,
             complex_pdb_path=candidate.complex_pdb_path,
@@ -119,6 +128,15 @@ def run_judges_on_entry(
         )
 
     return candidate
+
+
+def _save_results(candidates: list, output_path: Path) -> None:
+    """Save current results to disk (Parquet or CSV fallback)."""
+    df = pd.DataFrame([c.to_dict() for c in candidates])
+    try:
+        df.to_parquet(output_path, index=False)
+    except ImportError:
+        df.to_csv(output_path.with_suffix(".csv"), index=False)
 
 
 def main():
@@ -163,15 +181,23 @@ def main():
     biophysics_judge = BiophysicsJudge()
     physics_judge = PhysicsJudge()
 
-    # Run all judges on each entry
+    # Run all judges on each entry — save incrementally in case of C++ crash
     total = len(entries)
     candidates: list[NanobodyCandidate] = []
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     for idx, entry in enumerate(entries, 1):
         logger.info("[%d/%d] Starting %s ...", idx, total, entry["candidate_id"])
         candidate = run_judges_on_entry(
             entry, biology_judge, biophysics_judge, physics_judge
         )
         candidates.append(candidate)
+
+        # Save partial results every 5 entries (guards against C++ segfaults)
+        if idx % 5 == 0 or idx == total:
+            _save_results(candidates, output_path)
+            logger.info("  [checkpoint] Saved %d/%d results.", idx, total)
 
     # Summarize results
     df = pd.DataFrame([c.to_dict() for c in candidates])
@@ -204,18 +230,9 @@ def main():
     )
     logger.info("=" * 60)
 
-    # Save results (Parquet preferred, CSV fallback if pyarrow missing)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        df.to_parquet(output_path, index=False)
-        logger.info("Results written to %s", output_path)
-    except ImportError:
-        csv_path = output_path.with_suffix(".csv")
-        df.to_csv(csv_path, index=False)
-        logger.warning(
-            "pyarrow not installed — wrote CSV instead: %s", csv_path
-        )
+    # Final save
+    _save_results(candidates, output_path)
+    logger.info("Results written to %s", output_path)
 
     # Also print a concise table to stdout
     cols = [
