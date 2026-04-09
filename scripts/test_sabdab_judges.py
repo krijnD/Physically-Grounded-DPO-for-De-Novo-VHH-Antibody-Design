@@ -18,6 +18,7 @@ Usage on Snellius:
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -187,12 +188,35 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    run_start = time.time()
+    durations: list[float] = []
+
     for idx, entry in enumerate(entries, 1):
+        entry_start = time.time()
         logger.info("[%d/%d] Starting %s ...", idx, total, entry["candidate_id"])
         candidate = run_judges_on_entry(
             entry, biology_judge, biophysics_judge, physics_judge
         )
         candidates.append(candidate)
+
+        # Track timing
+        elapsed = time.time() - entry_start
+        durations.append(elapsed)
+        avg_per_entry = sum(durations) / len(durations)
+        remaining = avg_per_entry * (total - idx)
+        total_elapsed = time.time() - run_start
+
+        # Progress line
+        pct = idx / total * 100
+        bar_len = 30
+        filled = int(bar_len * idx // total)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        logger.info(
+            "  ⏱  %s %3.0f%% [%d/%d] | %.0fs this entry | "
+            "%.0fs elapsed | ~%.0fs remaining (%.0fs/entry avg)",
+            bar, pct, idx, total, elapsed, total_elapsed,
+            remaining, avg_per_entry,
+        )
 
         # Save partial results every 5 entries (guards against C++ segfaults)
         if idx % 5 == 0 or idx == total:
