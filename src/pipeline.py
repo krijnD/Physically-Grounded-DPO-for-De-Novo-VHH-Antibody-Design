@@ -14,6 +14,7 @@ Outputs a Parquet file with per-candidate verdicts for DPO pair construction.
 """
 
 import logging
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -114,7 +115,13 @@ def run_pipeline(
     biophysics_judge = BiophysicsJudge()
     physics_judge = PhysicsJudge()
 
-    for candidate in foldable:
+    total_foldable = len(foldable)
+    judge_start = time.time()
+    durations: list[float] = []
+
+    for idx, candidate in enumerate(foldable, 1):
+        entry_start = time.time()
+
         if not candidate.is_valid:
             continue
 
@@ -153,6 +160,21 @@ def run_pipeline(
                 "Candidate %s: no complex PDB, skipping physics evaluation.",
                 candidate.candidate_id,
             )
+
+        # Progress tracking
+        elapsed = time.time() - entry_start
+        durations.append(elapsed)
+        avg = sum(durations) / len(durations)
+        remaining = avg * (total_foldable - idx)
+        total_elapsed = time.time() - judge_start
+        pct = idx / total_foldable * 100
+        filled = int(30 * idx // total_foldable)
+        bar = "█" * filled + "░" * (30 - filled)
+        logger.info(
+            "  %s %3.0f%% [%d/%d] %s | %.0fs elapsed | ~%.0fs remaining",
+            bar, pct, idx, total_foldable, candidate.candidate_id,
+            total_elapsed, remaining,
+        )
 
     # ── Serialize results ──
     df = pd.DataFrame([c.to_dict() for c in candidates])
