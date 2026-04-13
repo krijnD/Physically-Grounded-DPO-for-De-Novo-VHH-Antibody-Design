@@ -112,6 +112,7 @@ def run_judges_on_entry(
                 "(known PyRosetta crash risk)", interface,
             )
             candidate.physics_verdict = "error"
+            candidate.is_valid = False
             return candidate
         physics_judge.evaluate(
             candidate,

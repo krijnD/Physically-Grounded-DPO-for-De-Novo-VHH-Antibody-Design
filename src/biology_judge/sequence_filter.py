@@ -3,7 +3,7 @@
 Uses ANARCI (via abnumber) to align sequences to the Kabat numbering
 scheme and applies the hallmark residue decision matrix:
 
-- W47 (absolute):  Exposed bulky hydrophobe → immediate rejection.
+- W47 (conditional): Bulky hydrophobe risk → flagged for 3D SAP validation.
 - L45 (conditional): Gatekeeper risk → flagged for 3D SAP validation.
 - V37 (conditional): Cavity risk → flagged for 3D SAP validation.
 - G44 (conditional): Solvation risk → flagged for 3D SAP validation.
@@ -75,16 +75,12 @@ def annotate_and_filter(candidate: NanobodyCandidate) -> NanobodyCandidate:
     }
     candidate.cdr3_sequence = cdr3_seq
 
-    # ── Absolute Rule: W47 ──
-    # Exposed Trp at position 47 is almost universally fatal to colloidal
-    # stability. The massive indole ring forces clathrate-like water ordering,
-    # driving irreversible aggregation.
+    # ── Conditional Rule: W47 ──
+    # Trp at position 47 can be fatal to colloidal stability when exposed,
+    # but some VHH nanobodies retain W47 with compensating framework
+    # shielding.  Flagged for 3D SAP validation in Phase 3.
     if pos_47 == "W":
-        candidate.fail_candidate(
-            "Phase 1: Absolute liability — exposed W47 bulky hydrophobe detected."
-        )
-        candidate.biology_verdict = "fail_absolute"
-        return candidate
+        candidate.biology_flags.append("W47_BULKY_INDOLE_RISK")
 
     # ── Conditional Flags (require 3D SAP resolution) ──
 

@@ -26,6 +26,7 @@ _FLAG_TO_RESIDUE: dict[str, int] = {
     "L45_GATEKEEPER_RISK": 45,
     "V37_CAVITY_RISK": 37,
     "G44_SOLVATION_RISK": 44,
+    "W47_BULKY_INDOLE_RISK": 47,
 }
 
 
