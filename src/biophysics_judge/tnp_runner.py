@@ -60,10 +60,20 @@ def _parse_tnp_json(json_path: Path) -> list[dict]:
     with open(json_path) as f:
         data = json.load(f)
 
-    # TNP may return a single dict or a list depending on input mode
+    # TNP output formats:
+    #   - list of dicts  → one dict per sequence (older TNP versions)
+    #   - dict of dicts  → keyed by sequence name (batch/multi-entry mode)
+    #   - single dict    → one sequence result (single-seq mode)
+    if isinstance(data, list):
+        return data
     if isinstance(data, dict):
+        # Check if values are dicts (multi-entry keyed by name)
+        first_val = next(iter(data.values()), None)
+        if isinstance(first_val, dict):
+            return list(data.values())
+        # Single sequence result (flat dict with "PSH", "PPC", etc.)
         return [data]
-    return data
+    return []
 
 
 def _find_tnp_json(output_dir: Path) -> Path | None:
