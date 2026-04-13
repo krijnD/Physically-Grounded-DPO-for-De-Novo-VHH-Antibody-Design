@@ -260,9 +260,27 @@ which TNP
 TNP --help
 ```
 
-This installs TNP and its dependencies (ImmuneBuilder/NanoBodyBuilder2, ANARCI, BioPython).
+### 3. Install ImmuneBuilder (NanoBodyBuilder2)
 
-### 3. Install DSSP (required by TNP)
+TNP calls NanoBodyBuilder2 (from ImmuneBuilder) for structure prediction,
+but `pip install .` for TNP does **not** pull it in automatically.
+
+```bash
+pip install ImmuneBuilder
+
+# ImmuneBuilder requires OpenMM + pdbfixer (not on PyPI — install separately)
+pip install openmm pdbfixer
+
+# If pip install openmm fails, install pdbfixer from source:
+#   pip install git+https://github.com/openmm/pdbfixer.git
+
+# Verify
+python -c "from ImmuneBuilder import NanoBodyBuilder2; print('OK')"
+```
+
+> **Note:** The first prediction will download model weights (~200 MB).
+
+### 4. Install DSSP (required by TNP)
 
 DSSP must be built from source on Snellius. It requires GCC 13+ (C++20) and a recent SQLite (the system SQLite is too old), both built into the venv.
 
@@ -272,7 +290,7 @@ module purge
 module load 2024
 module load GCCcore/13.3.0
 
-# 3a. Build SQLite from source (Snellius system version is too old for DSSP)
+# 4a. Build SQLite from source (Snellius system version is too old for DSSP)
 cd /projects/0/hpmlprjs/interns/krijn/tools/
 wget https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz
 tar xzf sqlite-autoconf-3460000.tar.gz
@@ -281,7 +299,7 @@ cd sqlite-autoconf-3460000
 make
 make install
 
-# 3b. Clone and build DSSP, pointing to the venv's SQLite
+# 4b. Clone and build DSSP, pointing to the venv's SQLite
 cd /projects/0/hpmlprjs/interns/krijn/tools/
 git clone https://github.com/PDB-REDO/dssp.git
 cd dssp
@@ -298,14 +316,14 @@ which mkdssp
 mkdssp --version
 ```
 
-### 4. Install PyRosetta (for Physics Judge — future)
+### 5. Install PyRosetta (for Physics Judge — future)
 
 ```bash
 pip install pyrosetta \
   --find-links https://graylab.jhu.edu/download/PyRosetta4/archive/release-quarterly/release
 ```
 
-### 5. Download datasets
+### 6. Download datasets
 
 ```bash
 # ANDD dataset
