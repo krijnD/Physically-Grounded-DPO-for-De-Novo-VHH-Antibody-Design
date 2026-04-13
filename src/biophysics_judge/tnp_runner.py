@@ -136,6 +136,7 @@ def run_tnp_batch(
         "--output", str(output_dir),
         "--ncores", str(ncores),
         "--name", "pipeline_batch",
+        "--web",  # Required for TNP to write JSON result files
     ]
 
     try:
