@@ -13,6 +13,8 @@ import json
 import logging
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -139,7 +141,9 @@ def run_tnp_batch(
         output_dir,
     )
 
-    # Execute TNP
+    # Execute TNP with real-time progress tracking.
+    # TNP creates a <name>_TNP.log file per sequence as it completes;
+    # we monitor these in a background thread to report progress.
     cmd = [
         "TNP",
         "--file", str(fasta_path),
@@ -148,6 +152,36 @@ def run_tnp_batch(
         "--name", "pipeline_batch",
         "--web",  # Required for TNP to write JSON result files
     ]
+
+    total_seqs = len(sequences)
+    start_time = time.time()
+    stop_event = threading.Event()
+
+    def _monitor_progress() -> None:
+        """Poll the output directory for per-sequence log files."""
+        seen = 0
+        while not stop_event.is_set():
+            logs = list(output_dir.glob("*_TNP.log"))
+            n_done = len(logs)
+            if n_done > seen:
+                seen = n_done
+                elapsed = time.time() - start_time
+                per_seq = elapsed / seen
+                remaining = per_seq * (total_seqs - seen)
+                pct = seen / total_seqs * 100
+                bar_len = 30
+                filled = int(bar_len * seen // total_seqs)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                logger.info(
+                    "  TNP %s %3.0f%% [%d/%d] | "
+                    "%.0fs elapsed | ~%.0fs remaining (%.1fs/seq)",
+                    bar, pct, seen, total_seqs,
+                    elapsed, remaining, per_seq,
+                )
+            stop_event.wait(timeout=3.0)
+
+    monitor = threading.Thread(target=_monitor_progress, daemon=True)
+    monitor.start()
 
     try:
         result = subprocess.run(
@@ -166,8 +200,15 @@ def run_tnp_batch(
             "https://github.com/oxpig/TNP and ensure it is on PATH."
         )
     finally:
-        # Clean up temp FASTA
+        stop_event.set()
+        monitor.join(timeout=5.0)
         fasta_path.unlink(missing_ok=True)
+
+    total_elapsed = time.time() - start_time
+    logger.info(
+        "  TNP finished in %.0fs (%.1fs/seq avg).",
+        total_elapsed, total_elapsed / max(total_seqs, 1),
+    )
 
     # Parse results
     json_path = _find_tnp_json(output_dir)
