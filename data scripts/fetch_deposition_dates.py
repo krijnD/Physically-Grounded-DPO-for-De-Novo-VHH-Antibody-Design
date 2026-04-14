@@ -8,7 +8,6 @@ from datetime import datetime
 
 RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
 BATCH_SIZE = 50
-IGLM_CUTOFF = datetime(2022, 1, 1)
 
 
 def extract_real_pdb_ids(csv_path: str) -> list[str]:
@@ -77,14 +76,29 @@ def main():
     parser.add_argument(
         "--input",
         required=True,
-        help="Path to ANDD_VHH_with_structure.csv",
+        help="Path to the CSV file containing PDB_ID and Predicted_or_Not columns.",
+    )
+    parser.add_argument(
+        "--cutoff",
+        default="2022-01-01",
+        help="Training data cutoff date (YYYY-MM-DD). PDBs on or after this date are safe. "
+             "Default: 2022-01-01 (IgLM). Example for ESM: --cutoff 2020-05-01",
+    )
+    parser.add_argument(
+        "--label",
+        default="post_cutoff",
+        help="Column name for the boolean flag in the output CSV. "
+             "Default: 'post_cutoff'. Example: --label post_iglm",
     )
     args = parser.parse_args()
 
     input_path = args.input
+    cutoff = datetime.strptime(args.cutoff, "%Y-%m-%d")
+    label = args.label
     output_path = os.path.join(os.path.dirname(input_path), "andd_real_deposition_dates.csv")
 
     print(f"Reading PDB IDs from: {input_path}")
+    print(f"Training cutoff date: {args.cutoff}  (flag column: '{label}')")
     pdb_ids = extract_real_pdb_ids(input_path)
     print(f"Found {len(pdb_ids)} unique real PDB IDs.\n")
 
@@ -97,7 +111,7 @@ def main():
 
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["pdb_id", "deposition_date", "post_iglm"])
+        writer.writerow(["pdb_id", "deposition_date", label])
 
         for pdb_id in pdb_ids:
             raw_date = date_map.get(pdb_id)
@@ -109,20 +123,20 @@ def main():
             # RCSB returns ISO 8601, e.g. "2022-03-15T00:00:00+0000"
             dep_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
             dep_date_str = dep_date.strftime("%Y-%m-%d")
-            post_iglm = dep_date.replace(tzinfo=None) >= IGLM_CUTOFF
+            post_cutoff = dep_date.replace(tzinfo=None) >= cutoff
 
-            writer.writerow([pdb_id, dep_date_str, post_iglm])
-            if post_iglm:
+            writer.writerow([pdb_id, dep_date_str, post_cutoff])
+            if post_cutoff:
                 post_iglm_count += 1
             else:
                 pre_iglm_count += 1
 
     print(f"\nOutput written to: {output_path}")
-    print(f"  Total PDB IDs:         {len(pdb_ids)}")
-    print(f"  Successfully fetched:  {len(pdb_ids) - failed_count}")
-    print(f"  Failed / missing:      {failed_count}")
-    print(f"  Post-IgLM (>= 2022):  {post_iglm_count}  <- safe to use")
-    print(f"  Pre-IgLM  (< 2022):   {pre_iglm_count}  <- potential contamination")
+    print(f"  Total PDB IDs:              {len(pdb_ids)}")
+    print(f"  Successfully fetched:       {len(pdb_ids) - failed_count}")
+    print(f"  Failed / missing:           {failed_count}")
+    print(f"  Post-cutoff ({args.cutoff}): {post_iglm_count}  <- safe to use")
+    print(f"  Pre-cutoff  ({args.cutoff}):  {pre_iglm_count}  <- potential contamination")
 
 
 if __name__ == "__main__":
