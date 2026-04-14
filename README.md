@@ -342,6 +342,40 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/fetch_nano.py` | Downloads post-2023, high-resolution (≤2.5 Å) VHH structures from SAbDab/RCSB |
 | `data scripts/filter_andd_vhh.py` | Filters ANDD Excel for VHH sequences and splits by structure availability |
 | `data scripts/fetch_deposition_dates.py` | Fetches original RCSB deposition dates for real PDB structures and flags entries safe from training data contamination |
+| `data scripts/subset_vhh_structures.py` | Copies post-cutoff PDB files into a clean subset directory and produces a filtered metadata CSV |
+| `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
+
+### Testing the judges (`scripts/test_sabdab_judges.py`)
+
+Runs the full pipeline (Phase 1 sequence filter → optional TNP folding → all three judges) on real SAbDab crystal structures. Results are written to a Parquet file with per-candidate verdicts.
+
+```bash
+BASE=/projects/0/hpmlprjs/interns/krijn
+SABDAB="$BASE/sabdab_nano_dataset_IgLM"
+
+# Quick test — biology + physics only (no TNP folding, fast)
+python scripts/test_sabdab_judges.py \
+  --tsv "$SABDAB/sabdab_nano_summary.tsv" \
+  --pdb-dir "$SABDAB/filtered_vhh_pdbs" \
+  --output data/results/sabdab_judge_test.parquet \
+  --limit 5
+
+# Full test — all judges including biophysics via TNP
+python scripts/test_sabdab_judges.py \
+  --tsv "$SABDAB/sabdab_nano_summary.tsv" \
+  --pdb-dir "$SABDAB/filtered_vhh_pdbs" \
+  --output data/results/sabdab_judge_test.parquet \
+  --run-tnp --ncores 4
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tsv` | *(required)* | Path to `sabdab_nano_summary.tsv` |
+| `--pdb-dir` | *(required)* | Directory with filtered SAbDab PDB files |
+| `--output` | `data/results/sabdab_judge_test.parquet` | Output Parquet path |
+| `--limit` | — | Process only first N entries (quick sanity check) |
+| `--run-tnp` | off | Enable TNP folding + Biophysics Judge |
+| `--ncores` | `1` | CPU cores for TNP folding |
 
 ---
 
