@@ -153,6 +153,11 @@ def run_tnp_batch(
         "--web",  # Required for TNP to write JSON result files
     ]
 
+    # Remove stale log files from previous runs so the progress monitor
+    # starts from zero.
+    for old_log in output_dir.glob("*_TNP.log"):
+        old_log.unlink(missing_ok=True)
+
     total_seqs = len(sequences)
     start_time = time.time()
     stop_event = threading.Event()
