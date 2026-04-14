@@ -38,7 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.common.candidate import NanobodyCandidate
 from src.common.pdb_utils import load_structure
-from src.common.sabdab_loader import load_sabdab_entries
+from src.common.sabdab_loader import load_sabdab_entries, load_andd_entries, load_pdb_entries
 from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
 from src.biophysics_judge.judge import BiophysicsJudge
@@ -87,13 +87,31 @@ def main():
     )
     parser.add_argument(
         "--tsv",
-        required=True,
-        help="Path to sabdab_nano_summary.tsv",
+        default=None,
+        help="Path to sabdab_nano_summary.tsv (SAbDab mode).",
+    )
+    parser.add_argument(
+        "--csv",
+        default=None,
+        help="Path to ANDD_VHH_with_structure.csv (ANDD mode). "
+             "Chain IDs and sequences are read from the CSV automatically.",
     )
     parser.add_argument(
         "--pdb-dir",
         required=True,
-        help="Directory containing filtered SAbDab PDB files",
+        help="Directory containing PDB files.",
+    )
+    parser.add_argument(
+        "--chain",
+        default="A",
+        help="Nanobody chain ID — only used when neither --tsv nor --csv is "
+             "provided (plain PDB directory mode, default: A).",
+    )
+    parser.add_argument(
+        "--antigen-chain",
+        default=None,
+        help="Antigen chain ID — only used in plain PDB directory mode. "
+             "Required for the Physics Judge to run (e.g. 'B').",
     )
     parser.add_argument(
         "--output",
@@ -121,8 +139,21 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load SAbDab entries
-    entries = load_sabdab_entries(args.tsv, args.pdb_dir)
+    # Load entries — three modes: SAbDab TSV, ANDD CSV, or plain PDB directory
+    if args.tsv:
+        entries = load_sabdab_entries(args.tsv, args.pdb_dir)
+    elif args.csv:
+        logger.info("Loading ANDD entries from CSV: %s", args.csv)
+        entries = load_andd_entries(args.csv, args.pdb_dir)
+    else:
+        logger.info(
+            "No --tsv or --csv provided; loading PDB files directly "
+            "(chain='%s', antigen='%s').",
+            args.chain, args.antigen_chain or "none",
+        )
+        entries = load_pdb_entries(
+            args.pdb_dir, chain_id=args.chain, antigen_chain_id=args.antigen_chain
+        )
     if not entries:
         logger.error("No valid SAbDab entries found. Check paths.")
         sys.exit(1)
