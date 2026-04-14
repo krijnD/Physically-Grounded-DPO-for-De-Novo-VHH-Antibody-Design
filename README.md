@@ -182,6 +182,7 @@ Starting from the full ANDD Excel file, the following filters were applied:
 |---|---|---|
 | `All_structures/` | 8,214 | All structures from the ANDD bulk download |
 | `VHH_structures/` | 1,261 | VHH-only structures copied from `All_structures/` |
+| `VHH_structures_post_iglm/` | — | Subset of VHH structures deposited after the IgLM training cutoff (contamination-safe) |
 
 ---
 
@@ -347,13 +348,17 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
 
-Runs the full pipeline (Phase 1 sequence filter → optional TNP folding → all three judges) on real SAbDab crystal structures. Results are written to a Parquet file with per-candidate verdicts.
+Runs the full pipeline (Phase 1 sequence filter → optional TNP folding → all three judges) on real crystal structures. Results are written to a Parquet file with per-candidate verdicts.
+
+The script supports three input modes depending on which dataset you are testing:
+
+#### Mode 1 — SAbDab (TSV metadata)
 
 ```bash
 BASE=/projects/0/hpmlprjs/interns/krijn
 SABDAB="$BASE/sabdab_nano_dataset_IgLM"
 
-# Quick test — biology + physics only (no TNP folding, fast)
+# Quick test — no TNP folding
 python scripts/test_sabdab_judges.py \
   --tsv "$SABDAB/sabdab_nano_summary.tsv" \
   --pdb-dir "$SABDAB/filtered_vhh_pdbs" \
@@ -368,14 +373,54 @@ python scripts/test_sabdab_judges.py \
   --run-tnp --ncores 4
 ```
 
+#### Mode 2 — ANDD (CSV metadata)
+
+Chain IDs, antigen chains, and sequences are read automatically from the ANDD CSV. No manual chain specification needed.
+
+```bash
+BASE=/projects/0/hpmlprjs/interns/krijn
+ANDD="$BASE/ANDD_nano_dataset_IgLM"
+
+# Quick test — first 10 entries
+python scripts/test_sabdab_judges.py \
+  --csv "$ANDD/ANDD_VHH_with_structure.csv" \
+  --pdb-dir "$ANDD/VHH_structures_post_iglm" \
+  --output data/results/andd_judge_test.parquet \
+  --limit 10
+
+# Full test — all judges including biophysics via TNP
+python scripts/test_sabdab_judges.py \
+  --csv "$ANDD/ANDD_VHH_with_structure.csv" \
+  --pdb-dir "$ANDD/VHH_structures_post_iglm" \
+  --output data/results/andd_judge_test.parquet \
+  --run-tnp --ncores 4
+```
+
+#### Mode 3 — Plain PDB directory (no metadata file)
+
+Use when you have a folder of PDB files with no accompanying metadata. Chain IDs must be specified manually. The Physics Judge is skipped if `--antigen-chain` is omitted.
+
+```bash
+python scripts/test_sabdab_judges.py \
+  --pdb-dir /path/to/pdbs \
+  --chain A --antigen-chain B \
+  --output data/results/custom_judge_test.parquet \
+  --run-tnp --ncores 4
+```
+
+#### All flags
+
 | Flag | Default | Description |
 |---|---|---|
-| `--tsv` | *(required)* | Path to `sabdab_nano_summary.tsv` |
-| `--pdb-dir` | *(required)* | Directory with filtered SAbDab PDB files |
+| `--tsv` | — | Path to `sabdab_nano_summary.tsv` (SAbDab mode) |
+| `--csv` | — | Path to `ANDD_VHH_with_structure.csv` (ANDD mode) |
+| `--pdb-dir` | *(required)* | Directory containing PDB files |
 | `--output` | `data/results/sabdab_judge_test.parquet` | Output Parquet path |
 | `--limit` | — | Process only first N entries (quick sanity check) |
 | `--run-tnp` | off | Enable TNP folding + Biophysics Judge |
 | `--ncores` | `1` | CPU cores for TNP folding |
+| `--chain` | `A` | Nanobody chain ID (plain PDB directory mode only) |
+| `--antigen-chain` | — | Antigen chain ID (plain PDB directory mode only) |
 
 ---
 
