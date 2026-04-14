@@ -164,3 +164,156 @@ def load_sabdab_entries(
 
     logger.info("Loaded %d SAbDab entries with valid sequences.", len(entries))
     return entries
+
+
+def load_andd_entries(csv_path: str, pdb_dir: str) -> list[dict]:
+    """Load pipeline-ready entries from the ANDD CSV metadata file.
+
+    The ANDD CSV (``ANDD_VHH_with_structure.csv``) contains one row per
+    mutation variant per PDB structure.  This function deduplicates to one
+    entry per PDB file, reads chain IDs and sequences from the CSV, and
+    matches them to the PDB files in ``pdb_dir``.
+
+    Chain IDs come from ``H_Chain Auth Asym ID`` and ``Ag_Auth Asym ID``
+    (first value when comma-separated).  The nanobody sequence is taken
+    directly from ``Ab/Nano H_Chain AA`` — no PDB parsing needed for the
+    sequence.  If a chain ID from the CSV is not found in the actual PDB
+    file (e.g. the file has been renumbered), the function logs a warning
+    and skips that entry.
+
+    Args:
+        csv_path: Path to ``ANDD_VHH_with_structure.csv``.
+        pdb_dir: Directory containing the PDB files (filenames should match
+            ``PDB_ID`` case-insensitively, e.g. ``7b2m.pdb`` or ``7B2M.pdb``).
+
+    Returns:
+        List of dicts compatible with the test pipeline (same keys as
+        :func:`load_sabdab_entries`).
+    """
+    pdb_dir = Path(pdb_dir)
+    df = pd.read_csv(csv_path)
+
+    # Keep first occurrence of each PDB_ID (wildtype / most complete row)
+    df = df.drop_duplicates(subset="PDB_ID", keep="first")
+    logger.info(
+        "ANDD CSV: %d unique PDB entries after deduplication.", len(df)
+    )
+
+    # Build a case-insensitive lookup of available PDB files
+    pdb_lookup: dict[str, Path] = {}
+    for p in pdb_dir.glob("*.pdb"):
+        pdb_lookup[p.stem.lower()] = p
+
+    def _first_chain(cell) -> str | None:
+        """Return the first chain letter from a comma-separated cell."""
+        if pd.isna(cell) or str(cell).strip() in ("", "nan", "\\"):
+            return None
+        return str(cell).split(",")[0].strip()
+
+    entries: list[dict] = []
+    skipped_no_file = 0
+    skipped_no_seq = 0
+    skipped_no_chain = 0
+
+    for _, row in df.iterrows():
+        pdb_id = str(row["PDB_ID"]).strip()
+        pdb_path = pdb_lookup.get(pdb_id.lower())
+
+        if pdb_path is None:
+            skipped_no_file += 1
+            logger.debug("No PDB file for %s, skipping.", pdb_id)
+            continue
+
+        # Sequence — prefer CSV value, fall back to PDB extraction
+        sequence = str(row.get("Ab/Nano H_Chain AA", "")).strip()
+        if sequence in ("", "nan", "\\"):
+            sequence = None
+
+        nb_chain = _first_chain(row.get("H_Chain Auth Asym ID"))
+        ag_chain = _first_chain(row.get("Ag_Auth Asym ID"))
+
+        if nb_chain is None:
+            skipped_no_chain += 1
+            logger.warning("No nanobody chain ID for %s, skipping.", pdb_id)
+            continue
+
+        # If sequence not in CSV, extract from PDB
+        if sequence is None:
+            sequence = extract_chain_sequence(str(pdb_path), nb_chain)
+            if sequence is None:
+                skipped_no_seq += 1
+                logger.warning(
+                    "Could not extract sequence for %s chain %s, skipping.",
+                    pdb_id, nb_chain,
+                )
+                continue
+
+        entries.append(
+            {
+                "candidate_id": pdb_id.lower(),
+                "raw_sequence": sequence,
+                "pdb_filepath": str(pdb_path),
+                "complex_pdb_path": str(pdb_path) if ag_chain else None,
+                "nanobody_chain_id": nb_chain,
+                "antigen_chain_ids": ag_chain,
+            }
+        )
+
+    logger.info(
+        "ANDD: loaded %d entries (skipped: %d no file, %d no chain, %d no seq).",
+        len(entries), skipped_no_file, skipped_no_chain, skipped_no_seq,
+    )
+    return entries
+
+
+def load_pdb_entries(
+    pdb_dir: str,
+    chain_id: str = "A",
+    antigen_chain_id: str | None = None,
+) -> list[dict]:
+    """Load pipeline-ready entries directly from a directory of PDB files.
+
+    Use this when there is no SAbDab TSV — e.g. for IgLM-generated or other
+    curated VHH structures.  If ``antigen_chain_id`` is provided the Physics
+    Judge will run; otherwise it is skipped.
+
+    Args:
+        pdb_dir: Directory containing ``.pdb`` files.
+        chain_id: Chain letter that holds the nanobody sequence (default ``"A"``).
+        antigen_chain_id: Chain letter(s) for the antigen (e.g. ``"B"``).
+            Set to ``None`` for nanobody-only structures.
+
+    Returns:
+        List of dicts compatible with the test pipeline (same keys as
+        :func:`load_sabdab_entries`).
+    """
+    pdb_dir = Path(pdb_dir)
+    pdb_files = sorted(pdb_dir.glob("*.pdb"))
+    logger.info(
+        "Found %d PDB files in %s (nanobody chain='%s', antigen chain='%s')",
+        len(pdb_files), pdb_dir, chain_id, antigen_chain_id or "none",
+    )
+
+    entries: list[dict] = []
+    for pdb_path in pdb_files:
+        candidate_id = pdb_path.stem
+        sequence = extract_chain_sequence(str(pdb_path), chain_id)
+        if sequence is None:
+            logger.warning(
+                "Could not extract sequence for %s chain %s, skipping.",
+                candidate_id, chain_id,
+            )
+            continue
+        entries.append(
+            {
+                "candidate_id": candidate_id,
+                "raw_sequence": sequence,
+                "pdb_filepath": str(pdb_path),
+                "complex_pdb_path": str(pdb_path) if antigen_chain_id else None,
+                "nanobody_chain_id": chain_id,
+                "antigen_chain_ids": antigen_chain_id,
+            }
+        )
+
+    logger.info("Loaded %d entries with valid sequences.", len(entries))
+    return entries
