@@ -341,3 +341,30 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 |---|---|
 | `data scripts/fetch_nano.py` | Downloads post-2023, high-resolution (≤2.5 Å) VHH structures from SAbDab/RCSB |
 | `data scripts/filter_andd_vhh.py` | Filters ANDD Excel for VHH sequences and splits by structure availability |
+| `data scripts/fetch_deposition_dates.py` | Fetches original RCSB deposition dates for real PDB structures and flags entries safe from training data contamination |
+
+---
+
+## Data Contamination Check
+
+When fine-tuning a generative model, structures that were deposited before the model's training data cutoff may have been seen during training, making them unsuitable as ground-truth winners.
+
+`data scripts/fetch_deposition_dates.py` handles this by querying the RCSB PDB GraphQL API for the `initial_release_date` of each structure (the `Update_Date` column in the ANDD CSV is unreliable — it reflects the last modification, not the original deposition, and is missing for ~47% of entries).
+
+**Usage:**
+```bash
+python "data scripts/fetch_deposition_dates.py" \
+  --input /path/to/ANDD_VHH_with_structure.csv \
+  --cutoff 2022-01-01 \
+  --label post_iglm
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input` | *(required)* | CSV with `PDB_ID` and `Predicted_or_Not` columns |
+| `--cutoff` | `2022-01-01` | Training data cutoff of the model being fine-tuned |
+| `--label` | `post_cutoff` | Name of the boolean flag column in the output |
+
+**Output:** `andd_real_deposition_dates.csv` placed next to the input CSV, with columns `pdb_id`, `deposition_date`, and `<label>` (True = safe to use).
+
+**IgLM cutoff rationale:** The IgLM preprint was published December 2021 and trained on an OAS snapshot likely taken mid-2021. `2022-01-01` is used as the conservative safe boundary.
