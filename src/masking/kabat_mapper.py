@@ -19,8 +19,15 @@ import logging
 from dataclasses import dataclass, field
 
 from abnumber import Chain
-from Bio.PDB.Polypeptide import PPBuilder, three_to_one
+from Bio.PDB.Polypeptide import PPBuilder
 from Bio.PDB.Structure import Structure
+
+try:
+    from Bio.PDB.Polypeptide import three_to_one
+except ImportError:
+    from Bio.Data.PDBData import protein_letters_3to1_extended as _3to1
+    def three_to_one(resname: str) -> str:
+        return _3to1[resname]
 
 from src.common.config import Config
 
