@@ -1,9 +1,11 @@
-"""Centralized thresholds and constants for all judges.
+"""Centralized thresholds and constants for all judges and masking.
 
 Sources:
 - Biology: Pipeline design document (Dignum, 2026)
 - Biophysics: Gordon et al. (2026), Therapeutic Nanobody Profiler
 - Physics: Zhou et al. (NeurIPS 2024), AbDPO
+- Masking: Paratope definition (Leem et al.), anchor protection (GeoGAD, AbFlex),
+           FR2 hallmarks (Mitchell & Colwell, 2018)
 """
 
 
@@ -52,3 +54,16 @@ class Config:
         (52, 56),   # CDR H2
         (95, 102),  # CDR H3
     ]
+
+    # ── Masking Module ──
+    # Paratope detection: heavy-atom distance cutoff (Angstroms)
+    # Ref: structural paratope = VHH heavy atoms within 5.0 Å of antigen
+    PARATOPE_DISTANCE_CUTOFF: float = 5.0
+
+    # Number of anchor residues flanking each CDR boundary to protect
+    # Ref: GeoGAD (Tan et al., 2024), AbFlex (Ruffolo et al., 2024)
+    ANCHOR_FLANK_SIZE: int = 3
+
+    # FR2 hallmark positions (Kabat) that distinguish VHH from VH
+    # Ref: Mitchell & Colwell (2018), Desmyter et al. (2015)
+    FR2_HALLMARK_POSITIONS: list[str] = ["37", "44", "45", "47"]
