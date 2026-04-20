@@ -13,13 +13,19 @@ Three additional metrics are stored but not used for rejection:
   - Total CDR Length
   - CDR3 Length
 
+Independence contract: this judge always emits a ``biophysics_verdict``
+regardless of ``candidate.is_valid``. ``is_valid`` is treated as a
+downstream aggregate label, not a gate. If TNP metrics are missing
+(e.g. folding failed, or Phase 1 flagged an unparseable sequence) the
+verdict is ``"skipped_no_tnp"`` rather than silent None — so the
+parquet is self-describing for hard-negative mining.
+
 Decision flow:
-  1. Candidate already failed → return immediately
-  2. Missing TNP metrics → skip with warning
-  3. PSH outside green zone → fail_psh
-  4. PPC above threshold → fail_ppc
-  5. Compactness outside range → fail_compactness
-  6. All passed → biophysics_verdict = "pass"
+  1. Missing TNP metrics → biophysics_verdict = "skipped_no_tnp"
+  2. PSH outside green zone → fail_psh
+  3. PPC above threshold → fail_ppc
+  4. Compactness outside range → fail_compactness
+  5. All passed → biophysics_verdict = "pass"
 """
 
 import logging
@@ -52,26 +58,29 @@ class BiophysicsJudge:
     ) -> NanobodyCandidate:
         """Run the Biophysics Judge on a candidate with TNP metrics populated.
 
+        Runs independently of any prior judge's verdict. ``is_valid`` is
+        only used as an aggregate label downstream — it does not gate
+        this judge.
+
         Args:
-            candidate: Must have psh_score, ppc_score, and compactness
-                       populated by the TNP runner.  If already failed
-                       (is_valid=False), returns immediately.
+            candidate: Candidate with psh_score, ppc_score, and compactness
+                       populated by the TNP runner.  If any of these are
+                       missing, the judge emits ``"skipped_no_tnp"`` so the
+                       output is self-describing.
 
         Returns:
             The candidate with biophysics_verdict set.
         """
-        if not candidate.is_valid:
-            return candidate
-
         # Guard: TNP metrics must be present
         if any(
             v is None
             for v in (candidate.psh_score, candidate.ppc_score, candidate.compactness)
         ):
             logger.warning(
-                "Candidate %s: missing TNP metrics, skipping biophysics evaluation.",
+                "Candidate %s: missing TNP metrics — biophysics_verdict = skipped_no_tnp.",
                 candidate.candidate_id,
             )
+            candidate.biophysics_verdict = "skipped_no_tnp"
             return candidate
 
         # ── PSH: bounded interval (strict green zone) ──

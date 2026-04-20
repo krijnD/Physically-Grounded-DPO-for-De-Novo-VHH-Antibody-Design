@@ -259,6 +259,9 @@ def main():
     run_start = time.time()
     durations: list[float] = []
 
+    # Every judge runs on every candidate — no short-circuit.  Each judge
+    # emits its own verdict (pass / fail_* / skipped_* / error); `is_valid`
+    # is the aggregate label only.
     for idx, candidate in enumerate(all_candidates, 1):
         entry_start = time.time()
         nb_chain = candidate.nanobody_chain_id or "H"
@@ -269,53 +272,26 @@ def main():
             idx, total, candidate.candidate_id, nb_chain, ag_chains or "?",
         )
 
-        if not candidate.is_valid:
-            logger.info("  Skipped (failed Phase 1)")
-            candidates.append(candidate)
-            elapsed = time.time() - entry_start
-            durations.append(elapsed)
-            _log_progress(idx, total, elapsed, durations, run_start)
-            if idx % 5 == 0 or idx == total:
-                _save_results(candidates, output_path)
-            continue
-
-        # Biology Judge
-        if candidate.pdb_filepath and Path(candidate.pdb_filepath).exists():
+        # ── Biology Judge ──
+        if candidate.biology_verdict == "fail_absolute":
+            # Phase 1 already spoke (ANARCI parse failure) — leave it.
+            logger.info("  Biology: %s (from Phase 1)", candidate.biology_verdict)
+        elif candidate.pdb_filepath and Path(candidate.pdb_filepath).exists():
             structure = load_structure(candidate.pdb_filepath, candidate.candidate_id)
             biology_judge.evaluate(candidate, structure, chain_id=nb_chain)
-            logger.info("  Biology: %s", candidate.biology_verdict or "skipped")
+            logger.info("  Biology: %s", candidate.biology_verdict)
         else:
-            logger.info("  Biology: skipped (no PDB)")
+            candidate.biology_verdict = "skipped_no_structure"
+            logger.info("  Biology: skipped_no_structure (no PDB)")
 
-        if not candidate.is_valid:
-            candidates.append(candidate)
-            elapsed = time.time() - entry_start
-            durations.append(elapsed)
-            _log_progress(idx, total, elapsed, durations, run_start)
-            if idx % 5 == 0 or idx == total:
-                _save_results(candidates, output_path)
-            continue
-
-        # Biophysics Judge
+        # ── Biophysics Judge ── (always runs; judge emits skipped_no_tnp)
         biophysics_judge.evaluate(candidate)
-        logger.info(
-            "  Biophysics: %s",
-            candidate.biophysics_verdict or "skipped (no TNP metrics)",
-        )
+        logger.info("  Biophysics: %s", candidate.biophysics_verdict)
 
-        if not candidate.is_valid:
-            candidates.append(candidate)
-            elapsed = time.time() - entry_start
-            durations.append(elapsed)
-            _log_progress(idx, total, elapsed, durations, run_start)
-            if idx % 5 == 0 or idx == total:
-                _save_results(candidates, output_path)
-            continue
-
-        # Physics Judge
+        # ── Physics Judge ── (always runs; judge emits skipped_no_antigen)
         if candidate.complex_pdb_path and ag_chains:
             ag_clean = ag_chains.replace(" ", "").replace("|", "")
-            interface = f"{nb_chain}_{ag_clean}"
+            interface = f"{nb_chain}_{ag_clean}" if ag_clean else None
 
             if nb_chain.islower() or any(c.islower() for c in ag_clean):
                 logger.warning(
@@ -323,7 +299,6 @@ def main():
                     "(known PyRosetta crash risk)", interface,
                 )
                 candidate.physics_verdict = "error"
-                candidate.is_valid = False
             else:
                 physics_judge.evaluate(
                     candidate,
@@ -331,12 +306,16 @@ def main():
                     nanobody_chain_id=nb_chain,
                     interface=interface,
                 )
-                verdict = candidate.physics_verdict or "skipped"
                 e_rep_str = f"{candidate.e_rep:.3f}" if candidate.e_rep is not None else "N/A"
                 dg_str = f"{candidate.delta_g:.3f}" if candidate.delta_g is not None else "N/A"
-                logger.info("  Physics: %s (E_Rep=%s, dG=%s)", verdict, e_rep_str, dg_str)
+                logger.info(
+                    "  Physics: %s (E_Rep=%s, dG=%s)",
+                    candidate.physics_verdict, e_rep_str, dg_str,
+                )
         else:
-            logger.info("  Physics: skipped (no complex PDB or no antigen chain info)")
+            # Call the judge so it sets the explicit verdict itself.
+            physics_judge.evaluate(candidate, complex_pdb_path=None, interface=None)
+            logger.info("  Physics: %s", candidate.physics_verdict)
 
         candidates.append(candidate)
         elapsed = time.time() - entry_start

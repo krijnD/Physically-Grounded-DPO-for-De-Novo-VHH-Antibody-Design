@@ -14,9 +14,16 @@ Requires a **complex** PDB (nanobody + antigen) and chain identifiers.
 This is unlike the Biology/Biophysics judges which operate on the
 nanobody monomer alone.
 
+Independence contract: this judge always emits a ``physics_verdict``
+regardless of ``candidate.is_valid``. ``is_valid`` is treated as a
+downstream aggregate label, not a gate. When there is no antigen chain
+or no complex PDB we emit ``"skipped_no_antigen"`` (Rosetta cannot
+evaluate an interface that does not exist), and on PyRosetta errors we
+emit ``"error"`` — both explicit rather than silent None.
+
 Decision flow:
-  1. Candidate already failed upstream → return immediately
-  2. No complex PDB available → skip with warning
+  1. No complex PDB or no interface → physics_verdict = "skipped_no_antigen"
+  2. Rosetta scoring raises → physics_verdict = "error"
   3. E_Rep > 5.0 REU → fail_e_rep
   4. delta_G > -2.0 REU → fail_delta_g
   5. Both pass → physics_verdict = "pass"
@@ -45,34 +52,43 @@ class PhysicsJudge:
     def evaluate(
         self,
         candidate: NanobodyCandidate,
-        complex_pdb_path: str,
+        complex_pdb_path: str | None = None,
         nanobody_chain_id: str = "H",
-        interface: str = Config.ROSETTA_INTERFACE,
+        interface: str | None = Config.ROSETTA_INTERFACE,
     ) -> NanobodyCandidate:
         """Run the Physics Judge on a nanobody–antigen complex.
 
+        Runs independently of any prior judge's verdict. ``is_valid`` is
+        only used as an aggregate label downstream — it does not gate
+        this judge. If the required inputs (complex PDB + interface) are
+        not available the judge emits ``"skipped_no_antigen"`` so the
+        output parquet is self-describing.
+
         Args:
-            candidate: Must have ``is_valid=True`` to be evaluated.
-                       Results are written to ``candidate.e_rep``,
-                       ``candidate.delta_g``, and ``candidate.physics_verdict``.
-            complex_pdb_path: Path to the complex PDB (nanobody + antigen).
+            candidate: Candidate to score. Results are written to
+                       ``candidate.e_rep``, ``candidate.delta_g``, and
+                       ``candidate.physics_verdict``.
+            complex_pdb_path: Path to the complex PDB (nanobody + antigen),
+                              or ``None`` to emit ``skipped_no_antigen``.
             nanobody_chain_id: Chain letter of the nanobody in the PDB.
-            interface: PyRosetta interface string (e.g. ``"H_A"``).
+            interface: PyRosetta interface string (e.g. ``"H_A"``), or
+                       ``None`` to emit ``skipped_no_antigen``.
 
         Returns:
             The candidate with physics verdict set.
         """
-        if not candidate.is_valid:
-            return candidate
-
-        # Guard: complex PDB must exist
-        if not complex_pdb_path or not Path(complex_pdb_path).exists():
-            logger.warning(
-                "Candidate %s: complex PDB not available (%s), "
-                "skipping physics evaluation.",
+        # Guard: complex PDB + interface must be available
+        if (
+            not complex_pdb_path
+            or not interface
+            or not Path(complex_pdb_path).exists()
+        ):
+            logger.info(
+                "Candidate %s: no complex PDB / interface — "
+                "physics_verdict = skipped_no_antigen.",
                 candidate.candidate_id,
-                complex_pdb_path,
             )
+            candidate.physics_verdict = "skipped_no_antigen"
             return candidate
 
         # Score the complex — wrapped in try/except because PyRosetta can

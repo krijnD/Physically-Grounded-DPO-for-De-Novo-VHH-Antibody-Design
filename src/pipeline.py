@@ -3,14 +3,26 @@
 Runs VHH candidate sequences through the multi-judge evaluation:
   Phase 1: 1D sequence annotation + deterministic pre-filter
   Phase 2: TNP batch (NanoBodyBuilder2 folding + biophysics metrics)
-  Phase 3: Multi-judge evaluation (Biology → Biophysics → Physics)
+  Phase 3: Multi-judge evaluation (Biology, Biophysics, Physics)
 
 TNP serves as both the folder and the biophysics analyzer, enforcing
 the "Fold Once, Judge Many" architecture.  The PDB structures it
 generates are shared with the Biology Judge (SAP) and Physics Judge
 (Rosetta, future).
 
-Outputs a Parquet file with per-candidate verdicts for DPO pair construction.
+Judge independence
+------------------
+Each judge runs on every candidate and emits its own verdict. A
+failure in one judge does NOT gate any other judge — ``is_valid`` is
+a pure aggregate label built from individual verdicts, used downstream
+for hard-negative DPO pair construction. The only legitimate skip is
+"required input missing" (no antigen → physics skipped;
+non-parseable sequence → TNP can't fold → biophysics skipped). In
+those cases the judge emits an explicit ``skipped_*`` verdict rather
+than silent None.
+
+Outputs a Parquet file with one row per candidate, one column per
+judge verdict.
 """
 
 import logging
@@ -69,12 +81,19 @@ def run_pipeline(
         annotate_and_filter(candidate)
         candidates.append(candidate)
 
-    # Separate absolute failures from candidates needing 3D evaluation
-    foldable = [c for c in candidates if c.is_valid]
+    # Phase 1 parseable candidates are the ones TNP can fold.  Unparseable
+    # sequences (ANARCI fail_absolute) still proceed to Phase 3 — they just
+    # get "skipped_unannotated" / "skipped_no_tnp" verdicts from downstream
+    # judges, so every candidate still has a complete row in the output.
+    foldable = [
+        c for c in candidates if c.biology_verdict != "fail_absolute"
+    ]
     logger.info(
-        "Phase 1 complete: %d/%d candidates proceed to folding.",
+        "Phase 1 complete: %d/%d candidates proceed to folding "
+        "(remaining %d will receive skipped verdicts).",
         len(foldable),
         len(candidates),
+        len(candidates) - len(foldable),
     )
 
     # ── Phase 2: TNP Batch (fold + biophysics metrics) ──
@@ -89,12 +108,15 @@ def run_pipeline(
             ncores=tnp_ncores,
         )
 
-        # Populate candidates with TNP results
+        # Populate candidates with TNP results.  If TNP produced nothing
+        # for a candidate, its metrics stay None — the Biophysics Judge
+        # will emit "skipped_no_tnp" for that row.
         for candidate in foldable:
             result = tnp_results.get(candidate.candidate_id)
             if result is None:
                 logger.warning(
-                    "Candidate %s: TNP produced no result, skipping 3D evaluation.",
+                    "Candidate %s: TNP produced no result — "
+                    "biophysics/biology will report skipped verdicts.",
                     candidate.candidate_id,
                 )
                 continue
@@ -110,45 +132,48 @@ def run_pipeline(
             if result.pdb_path:
                 candidate.pdb_filepath = result.pdb_path
 
-    # ── Phase 3: Multi-Judge Evaluation ──
+    # ── Phase 3: Multi-Judge Evaluation (every judge, every candidate) ──
     biology_judge = BiologyJudge()
     biophysics_judge = BiophysicsJudge()
     physics_judge = PhysicsJudge()
 
-    total_foldable = len(foldable)
+    total = len(candidates)
     judge_start = time.time()
     durations: list[float] = []
 
-    for idx, candidate in enumerate(foldable, 1):
+    for idx, candidate in enumerate(candidates, 1):
         entry_start = time.time()
 
-        if not candidate.is_valid:
-            continue
-
         # Biology Judge: localized SAP on conditional flags
-        if candidate.pdb_filepath:
+        if candidate.biology_verdict == "fail_absolute":
+            # Phase 1 already spoke — leave its verdict intact.
+            pass
+        elif candidate.pdb_filepath:
             structure = load_structure(
                 candidate.pdb_filepath, candidate.candidate_id
             )
             chain_id = candidate.nanobody_chain_id or "A"
             biology_judge.evaluate(candidate, structure, chain_id=chain_id)
-        elif candidate.biology_flags:
-            # Has conditional flags but no PDB — can't resolve them
+        else:
+            # Can't SAP without a folded structure (TNP likely failed).
             logger.warning(
-                "Candidate %s: conditional flags but no PDB, biology verdict deferred.",
+                "Candidate %s: no PDB — biology_verdict = skipped_no_structure.",
                 candidate.candidate_id,
             )
+            candidate.biology_verdict = "skipped_no_structure"
 
-        # Biophysics Judge: threshold check on TNP metrics
+        # Biophysics Judge: threshold check on TNP metrics.  Judge itself
+        # emits "skipped_no_tnp" when metrics are missing.
         biophysics_judge.evaluate(candidate)
 
-        # Physics Judge: Rosetta energy decomposition (E_Rep + delta_G)
-        if candidate.complex_pdb_path:
+        # Physics Judge: Rosetta energy decomposition (E_Rep + delta_G).
+        # Always invoke — the judge emits "skipped_no_antigen" when it
+        # lacks the inputs it needs.
+        if candidate.complex_pdb_path and candidate.antigen_chain_ids:
             nb_chain = candidate.nanobody_chain_id or "H"
-            ag_chains = candidate.antigen_chain_ids or "A"
             # SAbDab uses "A | C | B" format; PyRosetta needs "ACB"
-            ag_clean = ag_chains.replace(" ", "").replace("|", "")
-            interface = f"{nb_chain}_{ag_clean}"
+            ag_clean = candidate.antigen_chain_ids.replace(" ", "").replace("|", "")
+            interface = f"{nb_chain}_{ag_clean}" if ag_clean else None
             physics_judge.evaluate(
                 candidate,
                 complex_pdb_path=candidate.complex_pdb_path,
@@ -156,23 +181,24 @@ def run_pipeline(
                 interface=interface,
             )
         else:
-            logger.debug(
-                "Candidate %s: no complex PDB, skipping physics evaluation.",
-                candidate.candidate_id,
+            physics_judge.evaluate(
+                candidate,
+                complex_pdb_path=None,
+                interface=None,
             )
 
         # Progress tracking
         elapsed = time.time() - entry_start
         durations.append(elapsed)
         avg = sum(durations) / len(durations)
-        remaining = avg * (total_foldable - idx)
+        remaining = avg * (total - idx)
         total_elapsed = time.time() - judge_start
-        pct = idx / total_foldable * 100
-        filled = int(30 * idx // total_foldable)
+        pct = idx / total * 100
+        filled = int(30 * idx // total)
         bar = "█" * filled + "░" * (30 - filled)
         logger.info(
             "  %s %3.0f%% [%d/%d] %s | %.0fs elapsed | ~%.0fs remaining",
-            bar, pct, idx, total_foldable, candidate.candidate_id,
+            bar, pct, idx, total, candidate.candidate_id,
             total_elapsed, remaining,
         )
 
