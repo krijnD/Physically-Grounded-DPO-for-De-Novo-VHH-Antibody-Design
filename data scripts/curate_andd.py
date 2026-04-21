@@ -9,6 +9,12 @@ schema, same columns, but with ``H_Chain Auth Asym ID`` and
 ``Ag_Auth Asym ID`` overwritten by structure-verified values. Entries that
 cannot be curated are written to a separate rejected CSV for auditing.
 
+The sequence column ``Ab/Nano H_Chain AA`` is **not** modified. CSV stores
+the SEQRES-equivalent full construct sequence, whereas a PDB ATOM-derived
+sequence only includes residues with resolved coordinates; those routinely
+differ by unresolved termini / loop gaps, so comparing them is not
+informative about data quality.
+
 Non-destructive by design: never modifies the input CSV or the PDB
 directory.  The output CSV path must differ from the input, and existing
 output files are not clobbered unless ``--overwrite-output`` is passed.
@@ -245,26 +251,17 @@ def _curate_row(
         )
         return out, False
 
-    # ── Curated row: overwrite chain + antigen columns, handle seq mismatch ──
+    # ── Curated row: overwrite only chain + antigen columns ──
+    # The CSV's Ab/Nano H_Chain AA comes from SEQRES / the full biological
+    # construct; PDB extract_chain_sequence only includes residues with
+    # resolved ATOM coordinates, so they routinely differ by unresolved
+    # termini or loop gaps. That divergence is crystallography, not a data
+    # issue, so we leave the CSV sequence untouched.
     out["H_Chain Auth Asym ID"] = vhh["chain_id"]
     out["Ag_Auth Asym ID"] = ",".join(antigen_chains)
 
     notes: list[str] = []
     status = "ok"
-
-    if csv_seq is None:
-        out["Ab/Nano H_Chain AA"] = vhh["sequence"]
-        notes.append(
-            f"CSV 'Ab/Nano H_Chain AA' was empty; filled from PDB chain "
-            f"{vhh['chain_id']}."
-        )
-    elif csv_seq != vhh["sequence"]:
-        out["Ab/Nano H_Chain AA"] = vhh["sequence"]
-        status = "ok_sequence_mismatch"
-        notes.append(
-            f"CSV sequence (len {len(csv_seq)}) differs from PDB chain "
-            f"{vhh['chain_id']} (len {len(vhh['sequence'])}); PDB sequence used."
-        )
 
     if is_ambiguous:
         status = "ambiguous_vhh"
