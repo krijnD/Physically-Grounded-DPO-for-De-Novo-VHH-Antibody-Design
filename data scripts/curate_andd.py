@@ -345,12 +345,24 @@ def main():
         "Loaded %d rows (%d unique PDB_IDs after dedup)", n_before_dedup, len(df)
     )
 
+    pdb_lookup = _build_pdb_lookup(args.pdb_dir)
+    logger.info("Discovered %d PDB files in %s", len(pdb_lookup), args.pdb_dir)
+
+    # Keep only rows whose PDB is actually present in the input directory.
+    # The ANDD CSV covers 1300 PDBs; a typical --pdb-dir is a subset-specific
+    # slice (e.g. VHH_structures_post_iglm has 264). Applying --limit before
+    # this filter would sample the first N alphabetical entries and almost
+    # always miss the subset, producing 20/20 "load_failed".
+    n_before_filter = len(df)
+    df = df[df["PDB_ID"].astype(str).str.lower().isin(pdb_lookup)]
+    logger.info(
+        "Restricted to %d/%d rows with a PDB in %s",
+        len(df), n_before_filter, args.pdb_dir,
+    )
+
     if args.limit:
         df = df.head(args.limit)
         logger.info("Limited to first %d rows for testing", args.limit)
-
-    pdb_lookup = _build_pdb_lookup(args.pdb_dir)
-    logger.info("Discovered %d PDB files in %s", len(pdb_lookup), args.pdb_dir)
 
     # ── Curate ──
     curated: list[dict] = []
