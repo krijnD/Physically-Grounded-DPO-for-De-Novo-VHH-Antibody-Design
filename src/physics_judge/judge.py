@@ -24,9 +24,12 @@ emit ``"error"`` — both explicit rather than silent None.
 Decision flow:
   1. No complex PDB or no interface → physics_verdict = "skipped_no_antigen"
   2. Rosetta scoring raises → physics_verdict = "error"
-  3. E_Rep > 5.0 REU → fail_e_rep
-  4. delta_G > -2.0 REU → fail_delta_g
-  5. Both pass → physics_verdict = "pass"
+  3. Non-physical delta_G (|dg| > 1000 REU) → physics_verdict
+     = "skipped_scoring_failure" (structure prep couldn't resolve
+     clashes; distinct from a legitimate weak-binder reject)
+  4. E_Rep > 5.0 REU → fail_e_rep
+  5. delta_G > -2.0 REU → fail_delta_g
+  6. Both pass → physics_verdict = "pass"
 """
 
 import logging
@@ -114,6 +117,20 @@ class PhysicsJudge:
         # Populate metrics on the candidate
         candidate.e_rep = scores.e_rep
         candidate.delta_g = scores.delta_g
+
+        # ── Scoring-failure gate: non-physical delta_G ──
+        # The scorer sets this flag when |delta_G| exceeds the pathological
+        # threshold, meaning structure prep could not resolve clashes.
+        # Treat as a scoring skip, not a weak-binder reject — otherwise
+        # DPO pair selection treats unscored blowups as negatives.
+        if scores.scoring_failed:
+            logger.info(
+                "Candidate %s: non-physical delta_G detected — "
+                "physics_verdict = skipped_scoring_failure.",
+                candidate.candidate_id,
+            )
+            candidate.physics_verdict = "skipped_scoring_failure"
+            return candidate
 
         # ── E_Rep: steric clash gate ──
         if candidate.e_rep > self.e_rep_reject:
