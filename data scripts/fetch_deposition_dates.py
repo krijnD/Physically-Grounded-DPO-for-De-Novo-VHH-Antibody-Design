@@ -90,12 +90,18 @@ def main():
         help="Column name for the boolean flag in the output CSV. "
              "Default: 'post_cutoff'. Example: --label post_iglm",
     )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Path for the output CSV. Defaults to andd_real_deposition_dates.csv "
+             "in the same directory as --input.",
+    )
     args = parser.parse_args()
 
     input_path = args.input
     cutoff = datetime.strptime(args.cutoff, "%Y-%m-%d")
     label = args.label
-    output_path = os.path.join(os.path.dirname(input_path), "andd_real_deposition_dates.csv")
+    output_path = args.output or os.path.join(os.path.dirname(input_path), "andd_real_deposition_dates.csv")
 
     print(f"Reading PDB IDs from: {input_path}")
     print(f"Training cutoff date: {args.cutoff}  (flag column: '{label}')")
