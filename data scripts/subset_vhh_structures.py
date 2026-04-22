@@ -80,6 +80,12 @@ def main():
         default="post_iglm",
         help="Boolean column in dates CSV to filter on (default: post_iglm)",
     )
+    parser.add_argument(
+        "--output-csv",
+        default=None,
+        help="(Optional) Path for the filtered metadata CSV. Defaults to "
+             "ANDD_VHH_with_structure_post_cutoff.csv next to --metadata-csv.",
+    )
     args = parser.parse_args()
 
     # --- Load safe PDB IDs ---
@@ -96,7 +102,7 @@ def main():
 
     # --- Filter metadata CSV (optional) ---
     if args.metadata_csv:
-        out_csv = os.path.join(
+        out_csv = args.output_csv or os.path.join(
             os.path.dirname(args.metadata_csv),
             "ANDD_VHH_with_structure_post_cutoff.csv",
         )
