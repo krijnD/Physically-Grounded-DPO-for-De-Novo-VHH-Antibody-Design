@@ -51,6 +51,11 @@ class PhysicsScores:
 
     e_rep: float
     delta_g: Optional[float] = None  # None when fast-failed on e_rep
+    # True when delta_G came back non-physical (|dg| > DELTA_G_PATHOLOGICAL),
+    # i.e. structure prep couldn't resolve clashes in the bound state.
+    # When set, delta_g is nulled out and the judge emits
+    # "skipped_scoring_failure" rather than "fail_delta_g".
+    scoring_failed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +131,56 @@ def _find_pose_loop_residues(
             )
 
     return loops
+
+
+def repack_complex(pose) -> tuple[float, float]:
+    """Full-complex side-chain repack with ref2015.
+
+    Runs ``PackRotamersMover`` with ``RestrictToRepacking`` over every
+    residue in the pose — nanobody framework, CDR loops, and antigen.
+    Backbone is not moved; only side-chain rotamers are reassigned.
+
+    This is essential for raw crystal PDBs: unrelaxed side-chain clashes
+    in the framework or antigen (outside the CDR ±2 shell that
+    :func:`refine_cdr_loops` handles) survive into ``E_complex`` and
+    produce million-REU ``fa_rep`` blowups that dominate
+    ``delta_G = E_complex − (E_Ab + E_Ag)``.
+
+    Args:
+        pose: PyRosetta Pose (modified in place).
+
+    Returns:
+        Tuple of (pre_score, post_score) total ref2015 energies, for
+        audit logging. Large pre→post drops indicate the input had
+        significant clashes.
+    """
+    import pyrosetta
+    from pyrosetta.rosetta.core.pack.task import TaskFactory
+    from pyrosetta.rosetta.core.pack.task.operation import (
+        InitializeFromCommandline,
+        RestrictToRepacking,
+    )
+    from pyrosetta.rosetta.protocols.minimization_packing import PackRotamersMover
+
+    sfxn = pyrosetta.create_score_function("ref2015")
+    pre_score = sfxn(pose)
+
+    tf = TaskFactory()
+    tf.push_back(InitializeFromCommandline())
+    tf.push_back(RestrictToRepacking())
+    task = tf.create_task_and_apply_taskoperations(pose)
+
+    packer = PackRotamersMover(sfxn, task)
+    packer.apply(pose)
+
+    post_score = sfxn(pose)
+    logger.info(
+        "Full-complex repack: total score %.2f → %.2f REU (delta %+.2f)",
+        pre_score,
+        post_score,
+        post_score - pre_score,
+    )
+    return pre_score, post_score
 
 
 def refine_cdr_loops(
@@ -346,10 +401,14 @@ def score_complex(
 
     Pipeline:
       1. Load PDB → Pose
-      2. FastRelax CDR loops (resolve steric clashes)
-      3. Compute E_Rep (fast)
-      4. If E_Rep ≤ threshold → compute delta_G (expensive)
+      2. Full-complex side-chain repack (resolve framework/antigen clashes
+         from raw crystal PDBs — essential to avoid million-REU blowups)
+      3. FastRelax CDR loops (resolve residual CDR-local clashes)
+      4. Compute E_Rep (fast)
+      5. If E_Rep ≤ threshold → compute delta_G (expensive)
          If E_Rep > threshold → skip delta_G (fast-fail)
+      6. If |delta_G| exceeds DELTA_G_PATHOLOGICAL → flag scoring_failed
+         (prevents non-physical blowups from being labeled "weak binder")
 
     Args:
         complex_pdb_path: Path to the complex PDB file.
@@ -367,6 +426,19 @@ def score_complex(
     _ensure_init()
 
     pose = load_complex_pose(complex_pdb_path)
+
+    # Full-complex side-chain repack — relieves framework/antigen clashes
+    # in raw crystal PDBs. Without this, unrelaxed clashes outside the
+    # CDR ±2 shell produce non-physical million-REU fa_rep blowups in
+    # E_complex that dominate delta_G. Skip gracefully on failure.
+    try:
+        repack_complex(pose)
+    except Exception:
+        logger.warning(
+            "Full-complex repack failed for %s — scoring without full repack.",
+            complex_pdb_path,
+            exc_info=True,
+        )
 
     # CCD refinement — skip gracefully on failure
     try:
@@ -397,5 +469,18 @@ def score_complex(
 
     # Step 2: delta_G (expensive — only if E_Rep passes)
     delta_g = compute_delta_g(pose, interface)
+
+    # Pathological-value guard: if delta_G is outside the physical range
+    # even after structure prep, the score is unreliable (likely residual
+    # unresolvable clashes). Flag as scoring_failure rather than letting
+    # it be misinterpreted as a weak-binder reject.
+    if abs(delta_g) > Config.DELTA_G_PATHOLOGICAL:
+        logger.warning(
+            "delta_G %.2f REU exceeds pathological threshold ±%.1f — "
+            "marking scoring_failed (structure prep did not resolve clashes).",
+            delta_g,
+            Config.DELTA_G_PATHOLOGICAL,
+        )
+        return PhysicsScores(e_rep=e_rep, delta_g=None, scoring_failed=True)
 
     return PhysicsScores(e_rep=e_rep, delta_g=delta_g)
