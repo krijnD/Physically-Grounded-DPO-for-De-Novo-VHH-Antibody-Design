@@ -182,7 +182,8 @@ Starting from the full ANDD Excel file, the following filters were applied:
 |---|---|---|
 | `All_structures/` | 8,214 | All structures from the ANDD bulk download |
 | `VHH_structures/` | 1,261 | VHH-only structures copied from `All_structures/` |
-| `VHH_structures_post_iglm/` | — | Subset of VHH structures deposited after the IgLM training cutoff (contamination-safe) |
+| `VHH_structures_post_iglm/` | — | Subset deposited after the IgLM training cutoff (2022-01-01) |
+| `VHH_structures_post_diffab/` | — | Subset deposited after the DiffAb training cutoff (2021-12-25) |
 
 ---
 
@@ -430,12 +431,16 @@ When fine-tuning a generative model, structures that were deposited before the m
 
 `data scripts/fetch_deposition_dates.py` handles this by querying the RCSB PDB GraphQL API for the `initial_release_date` of each structure (the `Update_Date` column in the ANDD CSV is unreliable — it reflects the last modification, not the original deposition, and is missing for ~47% of entries).
 
-**Usage:**
+### Step 1 — `fetch_deposition_dates.py`
+
+Queries RCSB for each PDB's `initial_release_date` and writes a CSV flagging which entries are safe (deposited after the model's training cutoff).
+
 ```bash
 python "data scripts/fetch_deposition_dates.py" \
-  --input /path/to/ANDD_VHH_with_structure.csv \
-  --cutoff 2022-01-01 \
-  --label post_iglm
+  --input  /path/to/ANDD_VHH_with_structure.csv \
+  --cutoff 2021-12-25 \
+  --label  post_diffab \
+  --output /path/to/andd_real_deposition_dates_diffab.csv
 ```
 
 | Flag | Default | Description |
@@ -443,7 +448,39 @@ python "data scripts/fetch_deposition_dates.py" \
 | `--input` | *(required)* | CSV with `PDB_ID` and `Predicted_or_Not` columns |
 | `--cutoff` | `2022-01-01` | Training data cutoff of the model being fine-tuned |
 | `--label` | `post_cutoff` | Name of the boolean flag column in the output |
+| `--output` | `andd_real_deposition_dates.csv` next to `--input` | Output CSV path (override to avoid overwriting existing runs) |
 
-**Output:** `andd_real_deposition_dates.csv` placed next to the input CSV, with columns `pdb_id`, `deposition_date`, and `<label>` (True = safe to use).
+**Output:** CSV with columns `pdb_id`, `deposition_date`, and `<label>` (True = safe to use).
 
-**IgLM cutoff rationale:** The IgLM preprint was published December 2021 and trained on an OAS snapshot likely taken mid-2021. `2022-01-01` is used as the conservative safe boundary.
+**Cutoff rationale:**
+| Model | Cutoff | Rationale |
+|---|---|---|
+| IgLM | `2022-01-01` | IgLM preprint December 2021; trained on OAS snapshot mid-2021. `2022-01-01` is the conservative safe boundary. |
+| DiffAb | `2021-12-25` | DiffAb trained on SAbDab structures deposited before 2021-12-24 (NeurIPS 2022). |
+
+---
+
+### Step 2 — `subset_vhh_structures.py`
+
+Uses the deposition dates CSV to copy contamination-safe PDB files into a new directory and produce a filtered metadata CSV.
+
+```bash
+python "data scripts/subset_vhh_structures.py" \
+  --dates-csv      /path/to/andd_real_deposition_dates_diffab.csv \
+  --structures-dir /path/to/VHH_structures \
+  --output-dir     /path/to/VHH_structures_post_diffab \
+  --metadata-csv   /path/to/ANDD_VHH_with_structure.csv \
+  --output-csv     /path/to/ANDD_VHH_with_structure_post_diffab.csv \
+  --label          post_diffab
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dates-csv` | *(required)* | Output CSV from `fetch_deposition_dates.py` |
+| `--structures-dir` | *(required)* | Source directory with all VHH PDB files |
+| `--output-dir` | *(required)* | Directory to copy safe PDB files into (created if needed) |
+| `--metadata-csv` | — | (Optional) Original metadata CSV to also filter |
+| `--output-csv` | `ANDD_VHH_with_structure_post_cutoff.csv` next to `--metadata-csv` | Output path for filtered metadata CSV |
+| `--label` | `post_iglm` | Boolean column in dates CSV to filter on |
+
+**Output:** filtered PDB directory + (optionally) a filtered metadata CSV ready for `curate_andd.py`.
