@@ -43,6 +43,10 @@ class Config:
     # ── Physics Judge (Rosetta) ──
     DELTA_G_REJECT: float = -2.0   # > -2.0 REU → non-binder "Rock"
     E_REP_REJECT: float = 5.0      # > 5.0 REU → steric clash
+    # Any |delta_G| beyond this is non-physical (Rosetta scoring blowup
+    # from unresolved clashes in the bound state) — distinguished from
+    # weak-binder rejects so downstream DPO pair selection isn't polluted.
+    DELTA_G_PATHOLOGICAL: float = 1000.0
     ROSETTA_INTERFACE: str = "H_A"  # Chain interface for InterfaceAnalyzerMover
     CCD_OUTER_CYCLES: int = 1      # AbDPO-specified LoopMover_Refine_CCD param
     CCD_MAX_INNER_CYCLES: int = 10  # AbDPO-specified LoopMover_Refine_CCD param
