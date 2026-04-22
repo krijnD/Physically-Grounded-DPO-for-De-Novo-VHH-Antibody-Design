@@ -44,6 +44,7 @@ Usage:
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -71,6 +72,18 @@ logger = logging.getLogger("curate_andd")
 # which is the longest "VHH" we realistically expect.
 VHH_MIN_LEN = 100
 VHH_MAX_LEN = 160
+
+# ── CDR3 annotation sanity thresholds ─────────────────────────────────────
+# abnumber silently truncates CDR3 on malformed / truncated constructs.
+# Observed failure: 7F1G has CDR3="AGR" (len 3) because its ATOM record
+# ends "…TSAGRRGPGTQVTVSS" with no WG[x]GT J-motif — the real C-terminal
+# framework is missing. We reject such VHH candidates rather than emit
+# bad CDR3 annotations downstream.
+MIN_CDR3_LEN = 5
+MAX_CDR3_LEN = 30
+# Canonical J-region motif immediately following CDR3; its absence means
+# the construct is truncated and CDR3 boundaries are unreliable.
+_J_MOTIF_RE = re.compile(r"WG[A-Z]GT")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -104,6 +117,26 @@ def _identify_vhh_candidates(pdb_path: str, chain_ids: list[str]) -> list[dict]:
             continue
         if chain.chain_type != "H":
             continue
+
+        # CDR3 annotation sanity: length must be plausible, and the
+        # construct must contain a canonical J-motif. See module-level
+        # note on 7F1G ("AGR") for the motivating failure mode.
+        cdr3 = chain.cdr3_seq
+        if not (MIN_CDR3_LEN <= len(cdr3) <= MAX_CDR3_LEN):
+            logger.debug(
+                "Chain %s of %s: CDR3 len %d outside [%d,%d] — "
+                "skipping candidate (abnumber annotation unreliable).",
+                chain_id, pdb_path, len(cdr3), MIN_CDR3_LEN, MAX_CDR3_LEN,
+            )
+            continue
+        if not _J_MOTIF_RE.search(seq):
+            logger.debug(
+                "Chain %s of %s: no WG[x]GT J-motif — construct appears "
+                "truncated, skipping candidate.",
+                chain_id, pdb_path,
+            )
+            continue
+
         candidates.append({"chain_id": chain_id, "sequence": seq})
     return candidates
 
@@ -226,8 +259,9 @@ def _curate_row(
     if not candidates:
         out["curation_status"] = "no_vhh"
         out["curation_notes"] = (
-            f"No VH-type chain of length [{VHH_MIN_LEN},{VHH_MAX_LEN}] "
-            f"found among chains {chain_ids}."
+            f"No VH-type chain passed filters (length [{VHH_MIN_LEN},"
+            f"{VHH_MAX_LEN}], CDR3 length [{MIN_CDR3_LEN},{MAX_CDR3_LEN}], "
+            f"WG[x]GT J-motif present) among chains {chain_ids}."
         )
         return out, False
 
