@@ -146,8 +146,8 @@ def run_tnp_batch(
     # we monitor these in a background thread to report progress.
     cmd = [
         "TNP",
-        "--file", str(fasta_path),
-        "--output", str(output_dir),
+        "--file", str(fasta_path.resolve()),
+        "--output", str(output_dir.resolve()),
         "--ncores", str(ncores),
         "--name", "pipeline_batch",
         "--web",  # Required for TNP to write JSON result files
@@ -194,6 +194,7 @@ def run_tnp_batch(
             capture_output=True,
             text=True,
             check=True,
+            cwd=output_dir,  # keep Raw_Model_Outputs/ and other TNP scratch inside output_dir
         )
         logger.debug("TNP stdout:\n%s", result.stdout)
     except subprocess.CalledProcessError as e:
