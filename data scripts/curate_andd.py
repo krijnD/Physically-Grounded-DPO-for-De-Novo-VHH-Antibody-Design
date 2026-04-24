@@ -371,6 +371,23 @@ def main():
     logger.info("Reading %s", args.input_csv)
     df = pd.read_csv(args.input_csv)
     n_before_dedup = len(df)
+
+    # ANDD rows per PDB are redundant (a single PDB can appear 2–80× from
+    # different sources). ``Predicted_or_Not`` takes values ``real``,
+    # ``\`` (unlabelled sentinel), or ``predicted``. A naive ``keep="first"``
+    # dedup can retain a ``predicted`` row for a PDB that also has a ``real``
+    # row, silently putting a model-designed sequence into the curated set.
+    # Sort by preference first (real > unlabelled > predicted) so the
+    # retained row after dedup is the least-contaminated annotation.
+    _label_priority = {"real": 0, "\\": 1, "predicted": 2}
+    if "Predicted_or_Not" in df.columns:
+        df = (
+            df.assign(_label_p=df["Predicted_or_Not"].map(
+                lambda v: _label_priority.get(str(v).strip(), 1)
+            ))
+            .sort_values(["PDB_ID", "_label_p"], kind="stable")
+            .drop(columns="_label_p")
+        )
     df = df.drop_duplicates(subset="PDB_ID", keep="first")
     logger.info(
         "Loaded %d rows (%d unique PDB_IDs after dedup)", n_before_dedup, len(df)
