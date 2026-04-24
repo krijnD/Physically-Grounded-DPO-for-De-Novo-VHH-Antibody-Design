@@ -25,8 +25,10 @@ Algorithm (per row):
      VH-type and whose length falls in [100, 160] — a permissive VHH band
      that covers His-tags / linkers (Nb35 in 7F1O is 160 residues).
   3. Pick the VHH. If only one candidate, use it. If many, try in order:
-     (a) CSV's ``H_Chain Auth Asym ID`` letter if it is among the
-         candidates (most direct and robust annotation hint);
+     (a) any letter listed in CSV's ``H_Chain Auth Asym ID`` (which may
+         be comma-separated for homodimers, e.g. ``"B, D, F, H"``) that
+         matches a candidate chain — most direct annotation hint, robust
+         to SEQRES-vs-ATOM divergence;
      (b) exact match against the CSV's ``Ab/Nano H_Chain AA`` sequence;
      (c) otherwise flag as ``ambiguous_vhh`` and reject — we prefer a
          smaller but certain dataset to silent heuristic overrides of
@@ -93,7 +95,14 @@ MIN_CDR3_LEN = 5
 MAX_CDR3_LEN = 30
 # Canonical J-region motif immediately following CDR3; its absence means
 # the construct is truncated and CDR3 boundaries are unreliable.
-_J_MOTIF_RE = re.compile(r"WG[A-Z]GT")
+#
+# Position 1 is relaxed from strict ``W`` to ``[WRK]``: camelid / engineered
+# VHHs are observed with W→R or W→K substitutions at the otherwise highly
+# conserved FR4 start residue (W103). A diagnostic pass over the ANDD
+# post-DiffAb slice found 166/178 no_vhh rejections were caused by this
+# exact substitution — the chains are otherwise canonical VH with correct
+# CDR3 length and full FR4 geometry (e.g. ``...YAYRGQGTQVTVSS``).
+_J_MOTIF_RE = re.compile(r"[WRK]G[A-Z]GT")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -154,28 +163,30 @@ def _identify_vhh_candidates(pdb_path: str, chain_ids: list[str]) -> list[dict]:
 def _pick_vhh(
     candidates: list[dict],
     csv_seq: str | None,
-    csv_letter: str | None,
+    csv_letters: set[str] | None,
 ) -> tuple[dict, bool]:
     """Pick the best VHH candidate. Returns (chosen, is_ambiguous).
 
     Priority:
     - 1 candidate → it, unambiguous.
-    - >1 and the CSV's ``H_Chain Auth Asym ID`` letter is among the
-      candidates → that one, unambiguous. Letter is ANDD's most direct
-      hint and is robust to SEQRES-vs-ATOM sequence divergence.
-    - >1, no letter match, CSV seq matches one exactly → that one,
-      unambiguous. Rarely fires in practice because the CSV sequence is
-      SEQRES-style (full biological construct) while the candidate
-      sequences are ATOM-derived (resolved residues only).
+    - >1 and any CSV-listed letter matches a candidate chain → pick the
+      first such candidate, unambiguous. ANDD lists every equivalent
+      chain for homodimers (``"B, D, F, H"`` etc.); any match is correct
+      because the chains carry the same sequence, and the picked
+      candidate's chain_id is what flows downstream.
+    - >1, no letter match, CSV seq matches one candidate exactly → that
+      one, unambiguous. Rarely fires because CSV sequence is SEQRES-style
+      (full biological construct) while candidate sequences are
+      ATOM-derived (resolved residues only).
     - >1 and no hint resolves the tie → shortest (heuristic), flagged
       ambiguous. Caller should treat ambiguous picks as rejections, not
       silent overrides of CSV data.
     """
     if len(candidates) == 1:
         return candidates[0], False
-    if csv_letter:
+    if csv_letters:
         for c in candidates:
-            if c["chain_id"] == csv_letter:
+            if c["chain_id"] in csv_letters:
                 return c, False
     if csv_seq:
         for c in candidates:
@@ -255,18 +266,23 @@ def _normalize_csv_seq(raw) -> str | None:
     return s
 
 
-def _normalize_csv_letter(raw) -> str | None:
-    """Return a stripped chain-letter string, or None for missing values.
+def _normalize_csv_letter(raw) -> set[str] | None:
+    """Return a set of chain-letter strings, or None for missing values.
 
-    ANDD's ``H_Chain Auth Asym ID`` column typically holds a single letter
-    but can be empty, ``nan``, or the backslash sentinel ``\\``.
+    ANDD's ``H_Chain Auth Asym ID`` column can hold a single letter
+    (``"H"``) or — for homodimers / multi-copy VHH assemblies — a
+    comma-separated list of every equivalent chain (``"B, D, F, H"``,
+    ``"A, B, C, D, E, F, G, H"``). Empty values, ``nan``, and the
+    backslash sentinel ``\\`` return None. The whitespace after each
+    comma varies by row, so we tokenize on comma and strip.
     """
     if pd.isna(raw):
         return None
     s = str(raw).strip()
     if s in ("", "nan", "\\"):
         return None
-    return s
+    letters = {tok.strip() for tok in s.split(",") if tok.strip()}
+    return letters or None
 
 
 # ── Core per-row routine ──────────────────────────────────────────────────
@@ -317,22 +333,22 @@ def _curate_row(
         return out, False
 
     csv_seq = _normalize_csv_seq(row.get("Ab/Nano H_Chain AA"))
-    csv_letter = _normalize_csv_letter(row.get("H_Chain Auth Asym ID"))
-    vhh, is_ambiguous = _pick_vhh(candidates, csv_seq, csv_letter)
+    csv_letters = _normalize_csv_letter(row.get("H_Chain Auth Asym ID"))
+    vhh, is_ambiguous = _pick_vhh(candidates, csv_seq, csv_letters)
 
     # Reject on genuine ambiguity: multiple VH-type candidates with no
-    # reliable hint (CSV letter missing or not in candidates, and CSV
-    # sequence did not match any candidate exactly). For a DPO training
-    # set we prefer fewer but certain VHH / antigen assignments over
-    # heuristic guesses — see README "Step 3" for rationale.
+    # reliable hint (CSV letters missing or none match a candidate, and
+    # CSV sequence did not match any candidate exactly). For a DPO
+    # training set we prefer fewer but certain VHH / antigen assignments
+    # over heuristic guesses — see README "Step 3" for rationale.
     if is_ambiguous:
         cand_ids = [c["chain_id"] for c in candidates]
         out["curation_status"] = "ambiguous_vhh"
         out["curation_notes"] = (
-            f"Multiple VH candidates {cand_ids}; CSV H_Chain letter "
-            f"({csv_letter!r}) not in candidates and CSV sequence did not "
-            f"match any candidate exactly. Rejected to avoid uncertain "
-            f"VHH / antigen assignment."
+            f"Multiple VH candidates {cand_ids}; no CSV H_Chain letter "
+            f"(from {sorted(csv_letters) if csv_letters else []}) matches "
+            f"a candidate and CSV sequence did not match any candidate "
+            f"exactly. Rejected to avoid uncertain VHH / antigen assignment."
         )
         return out, False
 
