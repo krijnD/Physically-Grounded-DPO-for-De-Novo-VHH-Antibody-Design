@@ -359,6 +359,7 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/filter_andd_vhh.py` | Filters ANDD Excel for VHH sequences and splits by structure availability |
 | `data scripts/fetch_deposition_dates.py` | Fetches original RCSB deposition dates for real PDB structures and flags entries safe from training data contamination |
 | `data scripts/subset_vhh_structures.py` | Copies post-cutoff PDB files into a clean subset directory and produces a filtered metadata CSV |
+| `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
 | `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
@@ -498,3 +499,50 @@ python "data scripts/subset_vhh_structures.py" \
 | `--label` | `post_iglm` | Boolean column in dates CSV to filter on |
 
 **Output:** filtered PDB directory + (optionally) a filtered metadata CSV ready for `curate_andd.py`.
+
+---
+
+### Step 3 — `curate_andd.py`
+
+Verifies each ANDD entry against PDB geometry and writes a curated CSV whose `H_Chain Auth Asym ID` and `Ag_Auth Asym ID` columns are replaced with structure-verified values. Entries that can't be verified go to a rejected CSV.
+
+```bash
+python "data scripts/curate_andd.py" \
+  --input-csv    /path/to/ANDD_VHH_with_structure_post_diffab.csv \
+  --pdb-dir      /path/to/VHH_structures_post_diffab \
+  --output-csv   /path/to/ANDD_VHH_curated_diffab.csv \
+  --rejected-csv /path/to/ANDD_VHH_rejected_diffab.csv \
+  --overwrite-output
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input-csv` | *(required)* | ANDD CSV with `PDB_ID`, chain and sequence columns |
+| `--pdb-dir` | *(required)* | Directory of PDB files (output of `subset_vhh_structures.py`) |
+| `--output-csv` | *(required)* | Path for curated CSV (must differ from `--input-csv`) |
+| `--rejected-csv` | *(required)* | Path for rejected CSV |
+| `--contact-cutoff` | `5.0` Å | Heavy-atom distance cutoff for paratope contacts |
+| `--min-contact-residues` | `5` | Minimum VHH residues in contact to accept a chain as antigen |
+| `--overwrite-output` | off | Allow overwriting existing output/rejected CSVs |
+
+**What it checks:**
+
+1. **VHH identification** via ANARCI — rejects chains whose length, CDR3, or J-motif look malformed (catches truncated constructs like 7F1G's "AGR" CDR3).
+2. **VHH chain picking** — when multiple VH-type chains exist, prefers an exact sequence match against the CSV; otherwise picks the shortest.
+3. **Priority-sorted per-PDB dedup** — within each PDB, retains the row whose `Predicted_or_Not` is `real` > `\` > `predicted`, so a `predicted` row is never picked when a `real` alternative exists.
+4. **Antigen identification via contact geometry** — a non-VHH chain is called an antigen only if ≥ `--min-contact-residues` of its heavy atoms are within `--contact-cutoff` Å of the VHH. **All VH-type chains are excluded from antigen scoring**, not just the picked VHH — this prevents multi-VHH assemblies, VHH–Fab complexes, and anti-idiotypic pairs from being mis-labelled as antibody–antigen complexes (observed in ~20% of ANDD VHH PDBs in the post-DiffAb subset).
+
+**Rejection reasons** (written to `--rejected-csv` with `curation_status` column):
+
+| Status | Meaning |
+|---|---|
+| `load_failed` | PDB missing on disk or Biopython parse error |
+| `no_vhh` | No chain passed the ANARCI / length / CDR3 / J-motif gates |
+| `no_antigen` | No non-VH chain passed the contact threshold — typically a VHH-only assembly |
+| `ambiguous_vhh` | Multiple VH candidates, no CSV match — picked shortest; manual review advised (still in curated set, not rejected) |
+
+**Output columns added** (alongside the original ANDD schema):
+
+- `curation_vhh_chain_original`, `curation_antigen_chains_original` — the CSV's original annotations, preserved for audit.
+- `curation_vhh_contacts_per_chain` — JSON map `{chain_id: contact_count}` for the full contact profile.
+- `curation_status`, `curation_notes` — outcome and rationale.
