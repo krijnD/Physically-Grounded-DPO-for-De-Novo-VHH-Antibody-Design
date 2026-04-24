@@ -528,7 +528,7 @@ python "data scripts/curate_andd.py" \
 **What it checks:**
 
 1. **VHH identification** via ANARCI — rejects chains whose length, CDR3, or J-motif look malformed (catches truncated constructs like 7F1G's "AGR" CDR3).
-2. **VHH chain picking** — when multiple VH-type chains exist, prefers an exact sequence match against the CSV; otherwise picks the shortest.
+2. **VHH chain picking** — when multiple VH-type chains exist, picks in this priority order: (a) the chain whose letter matches the CSV's `H_Chain Auth Asym ID`, (b) the chain whose ATOM-derived sequence exactly matches the CSV's `Ab/Nano H_Chain AA`, (c) otherwise rejects the row as `ambiguous_vhh` rather than guess. This keeps the curated set small but confident; prior heuristic (pick shortest) was dropped because empirically it disagreed with ANDD's annotation in 94% of ambiguous rows, and downstream DPO training needs certainty about which chain is the VHH.
 3. **Priority-sorted per-PDB dedup** — within each PDB, retains the row whose `Predicted_or_Not` is `real` > `\` > `predicted`, so a `predicted` row is never picked when a `real` alternative exists.
 4. **Antigen identification via contact geometry** — a non-VHH chain is called an antigen only if ≥ `--min-contact-residues` of its heavy atoms are within `--contact-cutoff` Å of the VHH. **All VH-type chains are excluded from antigen scoring**, not just the picked VHH — this prevents multi-VHH assemblies, VHH–Fab complexes, and anti-idiotypic pairs from being mis-labelled as antibody–antigen complexes (observed in ~20% of ANDD VHH PDBs in the post-DiffAb subset).
 
@@ -538,8 +538,8 @@ python "data scripts/curate_andd.py" \
 |---|---|
 | `load_failed` | PDB missing on disk or Biopython parse error |
 | `no_vhh` | No chain passed the ANARCI / length / CDR3 / J-motif gates |
+| `ambiguous_vhh` | Multiple VH candidates and no reliable hint (CSV letter missing or not in candidates, and CSV sequence did not match any candidate exactly) — rejected rather than guessed |
 | `no_antigen` | No non-VH chain passed the contact threshold — typically a VHH-only assembly |
-| `ambiguous_vhh` | Multiple VH candidates, no CSV match — picked shortest; manual review advised (still in curated set, not rejected) |
 
 **Output columns added** (alongside the original ANDD schema):
 
