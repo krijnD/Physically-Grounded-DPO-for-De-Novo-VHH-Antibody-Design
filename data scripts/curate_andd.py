@@ -24,9 +24,13 @@ Algorithm (per row):
   2. For each chain, try ANARCI (abnumber); keep chains that parse as
      VH-type and whose length falls in [100, 160] — a permissive VHH band
      that covers His-tags / linkers (Nb35 in 7F1O is 160 residues).
-  3. Pick the VHH: if one candidate, use it; if many, prefer exact
-     sequence match against the CSV's ``Ab/Nano H_Chain AA`` column,
-     else pick the shortest.
+  3. Pick the VHH. If only one candidate, use it. If many, try in order:
+     (a) CSV's ``H_Chain Auth Asym ID`` letter if it is among the
+         candidates (most direct and robust annotation hint);
+     (b) exact match against the CSV's ``Ab/Nano H_Chain AA`` sequence;
+     (c) otherwise flag as ``ambiguous_vhh`` and reject — we prefer a
+         smaller but certain dataset to silent heuristic overrides of
+         CSV annotations.
   4. For each chain NOT in the VH-type set (i.e. excluding every chain
      that passed step 2, not just the picked VHH), count VHH residues
      with any heavy atom within ``--contact-cutoff`` (default 5 Å) of any
@@ -34,8 +38,10 @@ Algorithm (per row):
      (default 5) are antigens. Excluding all VH-type chains prevents
      multi-VHH assemblies / VHH–Fab / anti-idiotypic pairs from being
      scored as antigens (observed in ~20% of ANDD VHH PDBs).
-  5. If no VHH → reject as ``no_vhh``.  If no antigen → reject as
-     ``no_antigen``.  Otherwise write curated row.
+  5. Rejection statuses: ``load_failed`` (missing file or parse error),
+     ``no_vhh`` (no candidate passed ANARCI filters), ``ambiguous_vhh``
+     (multiple candidates, no reliable hint), ``no_antigen`` (no non-VHH
+     chain met the contact threshold). Otherwise write curated row.
 
 Usage:
     python "data scripts/curate_andd.py" \\
@@ -145,20 +151,37 @@ def _identify_vhh_candidates(pdb_path: str, chain_ids: list[str]) -> list[dict]:
     return candidates
 
 
-def _pick_vhh(candidates: list[dict], csv_seq: str | None) -> tuple[dict, bool]:
+def _pick_vhh(
+    candidates: list[dict],
+    csv_seq: str | None,
+    csv_letter: str | None,
+) -> tuple[dict, bool]:
     """Pick the best VHH candidate. Returns (chosen, is_ambiguous).
 
+    Priority:
     - 1 candidate → it, unambiguous.
-    - >1 and CSV seq matches one exactly → that one, unambiguous.
-    - >1 and no exact match → shortest (heuristic), flagged ambiguous.
+    - >1 and the CSV's ``H_Chain Auth Asym ID`` letter is among the
+      candidates → that one, unambiguous. Letter is ANDD's most direct
+      hint and is robust to SEQRES-vs-ATOM sequence divergence.
+    - >1, no letter match, CSV seq matches one exactly → that one,
+      unambiguous. Rarely fires in practice because the CSV sequence is
+      SEQRES-style (full biological construct) while the candidate
+      sequences are ATOM-derived (resolved residues only).
+    - >1 and no hint resolves the tie → shortest (heuristic), flagged
+      ambiguous. Caller should treat ambiguous picks as rejections, not
+      silent overrides of CSV data.
     """
     if len(candidates) == 1:
         return candidates[0], False
+    if csv_letter:
+        for c in candidates:
+            if c["chain_id"] == csv_letter:
+                return c, False
     if csv_seq:
         for c in candidates:
             if c["sequence"] == csv_seq:
                 return c, False
-    # Heuristic fallback
+    # Heuristic fallback — caller should reject.
     return min(candidates, key=lambda c: len(c["sequence"])), True
 
 
@@ -232,6 +255,20 @@ def _normalize_csv_seq(raw) -> str | None:
     return s
 
 
+def _normalize_csv_letter(raw) -> str | None:
+    """Return a stripped chain-letter string, or None for missing values.
+
+    ANDD's ``H_Chain Auth Asym ID`` column typically holds a single letter
+    but can be empty, ``nan``, or the backslash sentinel ``\\``.
+    """
+    if pd.isna(raw):
+        return None
+    s = str(raw).strip()
+    if s in ("", "nan", "\\"):
+        return None
+    return s
+
+
 # ── Core per-row routine ──────────────────────────────────────────────────
 def _curate_row(
     row: pd.Series,
@@ -280,7 +317,24 @@ def _curate_row(
         return out, False
 
     csv_seq = _normalize_csv_seq(row.get("Ab/Nano H_Chain AA"))
-    vhh, is_ambiguous = _pick_vhh(candidates, csv_seq)
+    csv_letter = _normalize_csv_letter(row.get("H_Chain Auth Asym ID"))
+    vhh, is_ambiguous = _pick_vhh(candidates, csv_seq, csv_letter)
+
+    # Reject on genuine ambiguity: multiple VH-type candidates with no
+    # reliable hint (CSV letter missing or not in candidates, and CSV
+    # sequence did not match any candidate exactly). For a DPO training
+    # set we prefer fewer but certain VHH / antigen assignments over
+    # heuristic guesses — see README "Step 3" for rationale.
+    if is_ambiguous:
+        cand_ids = [c["chain_id"] for c in candidates]
+        out["curation_status"] = "ambiguous_vhh"
+        out["curation_notes"] = (
+            f"Multiple VH candidates {cand_ids}; CSV H_Chain letter "
+            f"({csv_letter!r}) not in candidates and CSV sequence did not "
+            f"match any candidate exactly. Rejected to avoid uncertain "
+            f"VHH / antigen assignment."
+        )
+        return out, False
 
     # Exclude ALL VH-type chains from antigen scoring — not just the picked
     # VHH. ~20% of ANDD PDBs have additional VH chains (multi-VHH
@@ -312,20 +366,8 @@ def _curate_row(
     # issue, so we leave the CSV sequence untouched.
     out["H_Chain Auth Asym ID"] = vhh["chain_id"]
     out["Ag_Auth Asym ID"] = ",".join(antigen_chains)
-
-    notes: list[str] = []
-    status = "ok"
-
-    if is_ambiguous:
-        status = "ambiguous_vhh"
-        cand_ids = [c["chain_id"] for c in candidates]
-        notes.append(
-            f"Multiple VH candidates {cand_ids}; picked {vhh['chain_id']} "
-            f"(shortest, no CSV match). Review recommended."
-        )
-
-    out["curation_status"] = status
-    out["curation_notes"] = " | ".join(notes)
+    out["curation_status"] = "ok"
+    out["curation_notes"] = ""
     return out, True
 
 
