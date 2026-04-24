@@ -11,13 +11,27 @@ BATCH_SIZE = 50
 
 
 def extract_real_pdb_ids(csv_path: str) -> list[str]:
+    """Collect PDB_IDs for rows that are not explicitly model-predicted.
+
+    ANDD v2 uses three values in the ``Predicted_or_Not`` column: ``real``,
+    ``predicted``, and ``\\`` (a backslash sentinel meaning "unlabelled").
+    Spot-checking against RCSB showed the vast majority of ``\\``-labelled
+    PDB_IDs are genuine deposited structures — ANDD just didn't populate
+    the origin column for them. Filtering strictly on ``== "real"`` drops
+    ~571 real VHH PDBs out of the 1,300-entry VHH-with-structure set.
+
+    We therefore keep everything except explicit ``predicted`` rows.  Any
+    PDB_ID that is not a real RCSB entry (e.g. obsoleted, typo'd, or a
+    non-deposited model) is later auto-filtered downstream because the
+    RCSB GraphQL query returns no ``initial_release_date`` for it.
+    """
     pdb_ids = set()
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             pdb = row["PDB_ID"].strip()
             pred = row["Predicted_or_Not"].strip()
-            if pdb and pred == "real":
+            if pdb and pred != "predicted":
                 pdb_ids.add(pdb.upper())
     return sorted(pdb_ids)
 
