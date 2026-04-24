@@ -27,9 +27,13 @@ Algorithm (per row):
   3. Pick the VHH: if one candidate, use it; if many, prefer exact
      sequence match against the CSV's ``Ab/Nano H_Chain AA`` column,
      else pick the shortest.
-  4. For each non-VHH chain, count VHH residues with any heavy atom
-     within ``--contact-cutoff`` (default 5 Å) of any of its heavy atoms.
-     Chains with ≥ ``--min-contact-residues`` (default 5) are antigens.
+  4. For each chain NOT in the VH-type set (i.e. excluding every chain
+     that passed step 2, not just the picked VHH), count VHH residues
+     with any heavy atom within ``--contact-cutoff`` (default 5 Å) of any
+     of its heavy atoms. Chains with ≥ ``--min-contact-residues``
+     (default 5) are antigens. Excluding all VH-type chains prevents
+     multi-VHH assemblies / VHH–Fab / anti-idiotypic pairs from being
+     scored as antigens (observed in ~20% of ANDD VHH PDBs).
   5. If no VHH → reject as ``no_vhh``.  If no antigen → reject as
      ``no_antigen``.  Otherwise write curated row.
 
@@ -159,10 +163,20 @@ def _pick_vhh(candidates: list[dict], csv_seq: str | None) -> tuple[dict, bool]:
 
 
 def _count_contacts_per_chain(
-    structure, vhh_chain_id: str, cutoff: float
+    structure,
+    vhh_chain_id: str,
+    exclude_chain_ids: set[str],
+    cutoff: float,
 ) -> dict[str, int]:
-    """For each non-VHH chain, count VHH residues with any heavy atom within
-    ``cutoff`` Å of any heavy atom of that chain.
+    """For each chain not in ``exclude_chain_ids``, count VHH residues with
+    any heavy atom within ``cutoff`` Å of any heavy atom of that chain.
+
+    ``exclude_chain_ids`` must contain at least the picked VHH plus every
+    other VH-type chain in the structure. Empirically ~20% of ANDD VHH
+    PDBs have additional VH-type chains (multi-VHH assemblies, VHH–Fab
+    complexes, anti-idiotypic pairs); treating those as antigen candidates
+    pollutes the curated set with antibody-antibody contacts that DiffAb
+    should not see as ground-truth epitopes.
 
     Returns a dict {chain_id: residue_contact_count}.  Hetero residues
     (waters, ligands) are skipped on both sides.  Same K-D tree pattern as
@@ -180,7 +194,7 @@ def _count_contacts_per_chain(
 
     results: dict[str, int] = {}
     for chain in model.get_chains():
-        if chain.id == vhh_chain_id:
+        if chain.id in exclude_chain_ids:
             continue
         heavy_atoms = [
             a for a in chain.get_atoms()
@@ -268,8 +282,13 @@ def _curate_row(
     csv_seq = _normalize_csv_seq(row.get("Ab/Nano H_Chain AA"))
     vhh, is_ambiguous = _pick_vhh(candidates, csv_seq)
 
+    # Exclude ALL VH-type chains from antigen scoring — not just the picked
+    # VHH. ~20% of ANDD PDBs have additional VH chains (multi-VHH
+    # assemblies, VHH–Fab, anti-idiotypic) that would otherwise pass the
+    # contact threshold and be mis-annotated as antigens.
+    all_vhh_chain_ids = {c["chain_id"] for c in candidates}
     contacts = _count_contacts_per_chain(
-        structure, vhh["chain_id"], contact_cutoff
+        structure, vhh["chain_id"], all_vhh_chain_ids, contact_cutoff
     )
     out["curation_vhh_contacts_per_chain"] = json.dumps(contacts)
 
