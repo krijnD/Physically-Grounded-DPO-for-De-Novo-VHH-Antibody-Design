@@ -360,6 +360,7 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/fetch_deposition_dates.py` | Fetches original RCSB deposition dates for real PDB structures and flags entries safe from training data contamination |
 | `data scripts/subset_vhh_structures.py` | Copies post-cutoff PDB files into a clean subset directory and produces a filtered metadata CSV |
 | `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
+| `data scripts/diagnose_rejections.py` | Classifies why each `ANDD_VHH_rejected_*.csv` row was rejected (which filter stage, whether a looser rule would recover it) — informed the J-motif and homodimer fixes in `curate_andd.py` |
 | `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
@@ -527,8 +528,8 @@ python "data scripts/curate_andd.py" \
 
 **What it checks:**
 
-1. **VHH identification** via ANARCI — rejects chains whose length, CDR3, or J-motif look malformed (catches truncated constructs like 7F1G's "AGR" CDR3).
-2. **VHH chain picking** — when multiple VH-type chains exist, picks in this priority order: (a) the chain whose letter matches the CSV's `H_Chain Auth Asym ID`, (b) the chain whose ATOM-derived sequence exactly matches the CSV's `Ab/Nano H_Chain AA`, (c) otherwise rejects the row as `ambiguous_vhh` rather than guess. This keeps the curated set small but confident; prior heuristic (pick shortest) was dropped because empirically it disagreed with ANDD's annotation in 94% of ambiguous rows, and downstream DPO training needs certainty about which chain is the VHH.
+1. **VHH identification** via ANARCI — rejects chains whose length, CDR3, or J-motif look malformed (catches truncated constructs like 7F1G's "AGR" CDR3). The J-motif regex is `[WRK]G[x]GT`, not the textbook-strict `WG[x]GT`: a diagnostic pass over the post-DiffAb slice found 166/178 `no_vhh` rejections were real VHH chains with a W→R (or W→K) substitution at the first FR4 residue (e.g. `...YAYRGQGTQVTVSS`). These are complete, correctly-folded VHH domains with a known-rare substitution at an otherwise highly-conserved position; the strict regex was mis-rejecting them as truncated. Truncated constructs still fail because they lack any variant of the motif.
+2. **VHH chain picking** — when multiple VH-type chains exist, picks in this priority order: (a) any chain whose letter appears in the CSV's `H_Chain Auth Asym ID` column — this column is comma-separated for homodimers / multi-copy assemblies (e.g. `"B, D, F, H"`, or up to 16 letters for 8AIX), and `_normalize_csv_letter` splits it into a set before matching; (b) the chain whose ATOM-derived sequence exactly matches the CSV's `Ab/Nano H_Chain AA`; (c) otherwise rejects the row as `ambiguous_vhh` rather than guess. This keeps the curated set small but confident; the prior heuristic (pick shortest) was dropped because empirically it disagreed with ANDD's annotation in 94% of ambiguous rows, and downstream DPO training needs certainty about which chain is the VHH.
 3. **Priority-sorted per-PDB dedup** — within each PDB, retains the row whose `Predicted_or_Not` is `real` > `\` > `predicted`, so a `predicted` row is never picked when a `real` alternative exists.
 4. **Antigen identification via contact geometry** — a non-VHH chain is called an antigen only if ≥ `--min-contact-residues` of its heavy atoms are within `--contact-cutoff` Å of the VHH. **All VH-type chains are excluded from antigen scoring**, not just the picked VHH — this prevents multi-VHH assemblies, VHH–Fab complexes, and anti-idiotypic pairs from being mis-labelled as antibody–antigen complexes (observed in ~20% of ANDD VHH PDBs in the post-DiffAb subset).
 
@@ -538,7 +539,7 @@ python "data scripts/curate_andd.py" \
 |---|---|
 | `load_failed` | PDB missing on disk or Biopython parse error |
 | `no_vhh` | No chain passed the ANARCI / length / CDR3 / J-motif gates |
-| `ambiguous_vhh` | Multiple VH candidates and no reliable hint (CSV letter missing or not in candidates, and CSV sequence did not match any candidate exactly) — rejected rather than guessed |
+| `ambiguous_vhh` | Multiple VH candidates and no reliable hint — none of the letters in the CSV's `H_Chain Auth Asym ID` list match a candidate, and the CSV sequence did not match any candidate exactly. Rejected rather than guessed |
 | `no_antigen` | No non-VH chain passed the contact threshold — typically a VHH-only assembly |
 
 **Output columns added** (alongside the original ANDD schema):
@@ -546,3 +547,14 @@ python "data scripts/curate_andd.py" \
 - `curation_vhh_chain_original`, `curation_antigen_chains_original` — the CSV's original annotations, preserved for audit.
 - `curation_vhh_contacts_per_chain` — JSON map `{chain_id: contact_count}` for the full contact profile.
 - `curation_status`, `curation_notes` — outcome and rationale.
+
+**Observed yield on the post-DiffAb slice** (561 input rows):
+
+| Outcome | Rows |
+|---|---|
+| `ok` (curated) | 465 |
+| `no_vhh` | 36 |
+| `ambiguous_vhh` | 32 |
+| `no_antigen` | 28 |
+
+Before the J-motif relaxation and homodimer letter-split, the same input produced only 236 curated rows (202 `no_vhh` from W→R FR4 variants, 107 `ambiguous_vhh` from comma-separated homodimer annotations the script couldn't parse). Neither change relaxes the biological certainty bar — they fix misclassifications of rows whose CSV annotation was consistent with the structure all along.
