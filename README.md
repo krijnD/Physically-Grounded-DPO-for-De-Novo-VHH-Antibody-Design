@@ -176,6 +176,20 @@ Starting from the full ANDD Excel file, the following filters were applied:
 | `ANDD_VHH_with_structure.csv` | 3,178 | VHH sequences with a known PDB structure |
 | `ANDD_VHH_no_structure.csv` | 26,941 | VHH sequences without a structure (require ESMfold) |
 
+#### `Predicted_or_Not` audit
+
+ANDD v2's `Predicted_or_Not` column has three values: `real`, `predicted`, and `\` (a backslash used as an "unlabelled" sentinel). Among the 3,178 VHH rows with a `PDB_ID`:
+
+| Label | Rows | Unique PDBs | Status |
+|---|---|---|---|
+| `real` | 1,188 | 728 | Experimentally determined — keep |
+| `\` (unlabelled) | 1,911 | 1,014 | Mostly real, just unlabelled — keep |
+| `predicted` | 79 | 6 | Model-generated — exclude |
+
+Naïvely filtering `Predicted_or_Not == "real"` drops **571 real PDBs** that are only labelled `\`. We verified this against RCSB: of the 571 recovered IDs, **559 resolve as current PDB entries** and **12 are obsoleted** (each replaced by a superseding ID). Zero were hallucinated / generative IDs. `fetch_deposition_dates.py` therefore keeps any row whose label is not explicitly `predicted` — non-RCSB IDs are then auto-dropped by the RCSB query itself (no `initial_release_date` → no post-cutoff flag). The 1 `predicted`-only PDB and the 12 obsoletions are excluded by this layered check.
+
+Net effect: the pool of candidate PDBs entering the DiffAb pipeline is **1,287** verified-real VHH structures (vs. 728 with the naïve filter).
+
 #### PDB structures
 
 | Directory | PDB files | Description |
@@ -433,7 +447,7 @@ When fine-tuning a generative model, structures that were deposited before the m
 
 ### Step 1 — `fetch_deposition_dates.py`
 
-Queries RCSB for each PDB's `initial_release_date` and writes a CSV flagging which entries are safe (deposited after the model's training cutoff).
+Queries RCSB for each PDB's `initial_release_date` and writes a CSV flagging which entries are safe (deposited after the model's training cutoff). Rows with `Predicted_or_Not == "predicted"` are excluded; `real` and `\` (unlabelled) rows are both kept, and any PDB_ID not in RCSB (e.g. obsoletions) is dropped automatically when its date query returns no result. See the `Predicted_or_Not` audit above for the rationale.
 
 ```bash
 python "data scripts/fetch_deposition_dates.py" \
