@@ -74,6 +74,14 @@ dataset:
       - type: patch_around_anchor
 
 # ── Run-specific ──
-# Path is resolved relative to the project root by train.py. Update
-# this if the HuggingFace download landed on a different filename.
-init_checkpoint: third_party/diffab/trained_models/codesign_multicdrs.pt
+# Off-tree weight storage (industry standard): the source repo holds
+# code + configs only; pretrained weights live on project scratch
+# alongside the curated PDBs and the venv. Mirrors the location
+# convention already used for `pdb_dir` above.
+#
+# Download once on Snellius (login node, with the DPO venv active):
+#     huggingface-cli download luost26/DiffAb \
+#         --local-dir /projects/0/hpmlprjs/interns/krijn/checkpoints/diffab
+#
+# train.py accepts absolute paths as-is (no project-root prefixing).
+init_checkpoint: /projects/0/hpmlprjs/interns/krijn/checkpoints/diffab/codesign_multicdrs.pt
