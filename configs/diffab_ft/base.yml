@@ -1,0 +1,96 @@
+# Shared fine-tune hyperparameters for the DiffAb VHH ablation arms.
+#
+# This file is *not* loaded directly by the trainer (DiffAb's
+# load_config does a single yaml.safe_load with no merge support).
+# It exists as a single source of truth for human review: arm_a and
+# arm_b copy the relevant blocks here and override only `init_checkpoint`,
+# `processed_dir`, and W&B identifiers. If you change a value here you
+# must propagate it to both arm files. CI lint TODO.
+#
+# Reasoning notes per block:
+#   * model — identical to upstream codesign_multicdrs (the architecture
+#     both Arm A and Arm B's checkpoints were trained against). We never
+#     change architecture during fine-tuning; that would invalidate
+#     init_checkpoint.
+#   * train — re-tuned for small-dataset FT:
+#       - lr = 5e-5 (vs upstream 1e-4): smaller dataset, smaller steps
+#         to avoid overshooting good init weights.
+#       - max_iters = 20_000 (vs 200_000): with 191 clusters and bs=8
+#         we'd see ~20 epochs at 5K iters, plenty for FT.
+#       - val_freq = 250: tight enough that early-stop has resolution.
+#       - weight_decay = 0.01: light regularization for over-fitting risk.
+#       - ema_decay = 0.999: standard for diffusion FT.
+#       - early_stop_patience = 5: at val_freq=250 → 1250 iters of no
+#         improvement triggers stop.
+#   * dataset — `vhh_andd` adapter (registered by importing
+#     src.diffab_ft.datasets). Paths assume the trainer cwd is the
+#     project root.
+#   * scheduler — plateau matches upstream and works with our
+#     trainer's `if scheduler.type == 'plateau'` branch.
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  loss_weights:
+    rot: 1.0
+    pos: 1.0
+    seq: 1.0
+  max_iters: 20000
+  val_freq: 250
+  batch_size: 8
+  seed: 42
+  max_grad_norm: 1.0
+  ema_decay: 0.999
+  early_stop_patience: 5
+  save_top_k: 3
+  optimizer:
+    type: adam
+    lr: 5.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.8
+    patience: 10
+    min_lr: 5.0e-6
+
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/shared
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: train
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor
+
+  val:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/shared
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: val
+    transform:
+      - type: mask_single_cdr
+        selection: CDR3
+      - type: merge_chains
+      - type: patch_around_anchor
+
+# Each arm must override:
+#   init_checkpoint: <path>
+#   dataset.train.processed_dir, dataset.val.processed_dir (arm-specific
+#     LMDB to avoid cache collisions when both arms run on one box)

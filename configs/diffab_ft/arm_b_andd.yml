@@ -1,0 +1,75 @@
+# Arm B: fine-tune from the Zenodo 16894086 checkpoint (luost26/DiffAb
+# further fine-tuned on ANDD's ~12.6K Ab+Nb real PDBs). Already nanobody-
+# aware; small distribution shift to our 465-entry curated subset.
+#
+# DO NOT use this config until Phase 1 (check_zenodo_checkpoint.py)
+# reports VERDICT: LOAD_OK or LOAD_OK_NONSTRICT. If the verdict is
+# LOAD_FAIL, the architecture differs and this config will silently load
+# garbage with strict=False in train.py.
+#
+# Mirror of base.yml with arm-specific overrides ONLY at the bottom.
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  loss_weights:
+    rot: 1.0
+    pos: 1.0
+    seq: 1.0
+  max_iters: 20000
+  val_freq: 250
+  batch_size: 8
+  seed: 42
+  max_grad_norm: 1.0
+  ema_decay: 0.999
+  early_stop_patience: 5
+  save_top_k: 3
+  optimizer:
+    type: adam
+    lr: 5.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.8
+    patience: 10
+    min_lr: 5.0e-6
+
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/arm_b
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: train
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor
+
+  val:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/arm_b
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: val
+    transform:
+      - type: mask_single_cdr
+        selection: CDR3
+      - type: merge_chains
+      - type: patch_around_anchor
+
+# ── Arm B specifics ──
+init_checkpoint: data/checkpoints/andd_init/checkpoint.pt
