@@ -282,7 +282,14 @@ def main() -> int:
             logger.error("init_checkpoint not found: %s", init_path)
             return 2
         logger.info("Loading init weights from %s", init_path)
-        ck = torch.load(str(init_path), map_location=args.device)
+        # weights_only=False: luost26/DiffAb's checkpoint pickles its
+        # original training config as an easydict.EasyDict, which the
+        # torch>=2.6 default (weights_only=True) refuses. The checkpoint
+        # comes from a known HF source, so opt back into the legacy
+        # full-pickle path. Resume checkpoints we write ourselves (handled
+        # below) only contain tensors + plain dicts — those still load
+        # under the default safe path.
+        ck = torch.load(str(init_path), map_location=args.device, weights_only=False)
         sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
         result = model.load_state_dict(sd, strict=False)
         logger.info("Init load: %d missing, %d unexpected.",
