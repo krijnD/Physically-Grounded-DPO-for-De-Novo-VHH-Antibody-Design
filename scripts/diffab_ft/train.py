@@ -16,7 +16,7 @@ thesis-grade fine-tune on 191 CDR clusters:
      that we will overfit if we run the full ``max_iters``. We track the
      best EMA val loss and stop after ``patience`` validations without
      improvement.
-  3. **W&B logging** — group-tagged so Arm A vs. Arm B comparisons in
+  3. **W&B logging** — group-tagged so seed-stability comparisons in
      the thesis are one click in the dashboard. TensorBoard is kept as a
      fallback (compute nodes occasionally lose outbound).
 
@@ -50,21 +50,22 @@ Usage
 ::
 
     # Smoke test (no W&B, ≤100 iters):
-    python scripts/diffab_ft/train.py configs/diffab_ft/arm_a_sabdab.yml \\
+    python scripts/diffab_ft/train.py configs/diffab_ft/vhh_ft.yml \\
         --output-dir runs/smoke --debug
 
     # Full run:
-    python scripts/diffab_ft/train.py configs/diffab_ft/arm_a_sabdab.yml \\
-        --output-dir runs/arm_a \\
+    python scripts/diffab_ft/train.py configs/diffab_ft/vhh_ft.yml \\
+        --output-dir runs/vhh_ft \\
+        --run-name seed42 \\
         --wandb-project vhh-diffab-ft \\
-        --wandb-run-name arm_a_seed42 \\
-        --wandb-group arm_a_sabdab_init
+        --wandb-run-name seed42 \\
+        --wandb-group vhh_ft
 
     # Resume after pre-emption:
-    python scripts/diffab_ft/train.py configs/diffab_ft/arm_a_sabdab.yml \\
-        --output-dir runs/arm_a \\
-        --wandb-run-name arm_a_seed42 \\
-        --resume runs/arm_a/arm_a_seed42/checkpoints/state_5000.pt
+    python scripts/diffab_ft/train.py configs/diffab_ft/vhh_ft.yml \\
+        --output-dir runs/vhh_ft \\
+        --run-name seed42 \\
+        --resume runs/vhh_ft/seed42/checkpoints/state_5000.pt
 """
 
 from __future__ import annotations
@@ -198,7 +199,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("config", type=Path,
-                        help="Path to fine-tune YAML (e.g. arm_a_sabdab.yml).")
+                        help="Path to fine-tune YAML (e.g. vhh_ft.yml).")
     parser.add_argument("--output-dir", type=Path, required=True,
                         help="Parent dir for run outputs.")
     parser.add_argument("--run-name", type=str, default=None,

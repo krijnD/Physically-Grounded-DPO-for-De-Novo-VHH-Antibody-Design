@@ -44,20 +44,20 @@ Usage
     # 1. Cheap ELBO baseline on the upstream luost26 weights.
     python scripts/diffab_ft/evaluate.py \\
         --checkpoint third_party/diffab/trained_models/codesign_multicdrs.pt \\
-        --config     configs/diffab_ft/arm_a_sabdab.yml \\
+        --config     configs/diffab_ft/vhh_ft.yml \\
         --split      val \\
         --mode       elbo \\
         --output     runs/baseline_upstream/eval_val.json
 
     # 2. Per-CDR design metrics on a fine-tuned checkpoint.
     python scripts/diffab_ft/evaluate.py \\
-        --checkpoint runs/arm_a/arm_a_seed42/checkpoints/best_ema.pt \\
-        --config     configs/diffab_ft/arm_a_sabdab.yml \\
+        --checkpoint runs/vhh_ft/seed42/checkpoints/best_ema.pt \\
+        --config     configs/diffab_ft/vhh_ft.yml \\
         --split      test \\
         --mode       design \\
         --num-samples 8 \\
-        --save-pdbs   runs/arm_a/arm_a_seed42/eval_pdbs \\
-        --output      runs/arm_a/arm_a_seed42/eval_test.json
+        --save-pdbs   runs/vhh_ft/seed42/eval_pdbs \\
+        --output      runs/vhh_ft/seed42/eval_test.json
 """
 
 from __future__ import annotations

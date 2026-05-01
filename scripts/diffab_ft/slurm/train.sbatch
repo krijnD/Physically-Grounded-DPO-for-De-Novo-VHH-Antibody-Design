@@ -1,24 +1,28 @@
 #!/bin/bash
-# Snellius SLURM script: Arm A fine-tune (luost26/DiffAb → our 191-cluster VHH set).
+# Snellius SLURM script: VHH fine-tune (luost26/DiffAb → 191-cluster VHH set).
 #
 # Submit from the project root:
-#     sbatch scripts/diffab_ft/slurm/train_arm_a.sbatch
+#     sbatch scripts/diffab_ft/slurm/train.sbatch
 #
 # Outputs:
-#   logs/slurm/diffab_ft_arm_a_<jobid>.out  — combined stdout/stderr.
-#   runs/arm_a/arm_a_seed42/                — per-run artifacts (configs,
-#                                              checkpoints, log.txt).
+#   logs/slurm/diffab_ft_<jobid>.out  — combined stdout/stderr.
+#   runs/vhh_ft/seed42/               — per-run artifacts (configs,
+#                                        checkpoints, log.txt).
 #
 # Wall time budget: ~12-18h on a single A100 for 20K iters with our
 # settings; 24h leaves headroom for warm-up I/O and the LMDB build on
 # the first run.
+#
+# Seed sweep: copy this file to train_seed123.sbatch / train_seed2026.sbatch
+# and change the seed in the config + run-name. The seed-stability table
+# is the thesis ablation (no second arm).
 
 #SBATCH --partition=gpu_a100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=18
 #SBATCH --mem=120G
 #SBATCH --time=24:00:00
-#SBATCH --job-name=diffab_ft_arm_a
+#SBATCH --job-name=diffab_ft
 #SBATCH --output=logs/slurm/%x_%j.out
 
 set -euo pipefail
@@ -42,13 +46,13 @@ echo "Started:  $(date -Iseconds)"
 
 # ── Run ─────────────────────────────────────────────────────────────
 python scripts/diffab_ft/train.py \
-    configs/diffab_ft/arm_a_sabdab.yml \
-    --output-dir runs/arm_a \
-    --run-name   arm_a_seed42 \
+    configs/diffab_ft/vhh_ft.yml \
+    --output-dir runs/vhh_ft \
+    --run-name   seed42 \
     --num-workers 8 \
     --wandb-project vhh-diffab-ft \
-    --wandb-run-name arm_a_seed42 \
-    --wandb-group   arm_a_sabdab_init \
+    --wandb-run-name seed42 \
+    --wandb-group   vhh_ft \
     --wandb-mode    offline   # safer on compute nodes; sync after with `wandb sync`
 
 echo "Finished: $(date -Iseconds)"

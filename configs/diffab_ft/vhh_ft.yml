@@ -1,13 +1,15 @@
-# Arm B: fine-tune from the Zenodo 16894086 checkpoint (luost26/DiffAb
-# further fine-tuned on ANDD's ~12.6K Ab+Nb real PDBs). Already nanobody-
-# aware; small distribution shift to our 465-entry curated subset.
+# VHH fine-tune: luost26/DiffAb (SAbDab-trained, mostly paired Ab,
+# minimal VHH exposure) → fine-tune on the 465 curated VHH+antigen
+# entries (191 CDR clusters at 70% identity).
 #
-# DO NOT use this config until Phase 1 (check_zenodo_checkpoint.py)
-# reports VERDICT: LOAD_OK or LOAD_OK_NONSTRICT. If the verdict is
-# LOAD_FAIL, the architecture differs and this config will silently load
-# garbage with strict=False in train.py.
+# This is the only fine-tune config. Earlier planning included a
+# second "Arm B" starting from a public VHH-warmed checkpoint, but
+# no such checkpoint exists publicly (Zenodo 16894086 is the ANDD
+# dataset only). Single-arm is the right scope: π_ref needs to be
+# VHH-aware enough for DPO to sharpen, not optimal in isolation.
 #
-# Mirror of base.yml with arm-specific overrides ONLY at the bottom.
+# Mirror of base.yml with run-specific overrides ONLY at the bottom.
+# Keep the model and train blocks in sync if base.yml changes.
 
 model:
   type: diffab
@@ -50,7 +52,7 @@ dataset:
     type: vhh_andd
     manifest_path: data/datasets/diffab_manifest.tsv
     pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
-    processed_dir: data/processed/arm_b
+    processed_dir: data/processed/vhh_ft   # arm-specific LMDB
     splits_path:   data/datasets/clustering/cluster_splits.json
     split: train
     transform:
@@ -62,7 +64,7 @@ dataset:
     type: vhh_andd
     manifest_path: data/datasets/diffab_manifest.tsv
     pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
-    processed_dir: data/processed/arm_b
+    processed_dir: data/processed/vhh_ft
     splits_path:   data/datasets/clustering/cluster_splits.json
     split: val
     transform:
@@ -71,5 +73,7 @@ dataset:
       - type: merge_chains
       - type: patch_around_anchor
 
-# ── Arm B specifics ──
-init_checkpoint: data/checkpoints/andd_init/checkpoint.pt
+# ── Run-specific ──
+# Path is resolved relative to the project root by train.py. Update
+# this if the HuggingFace download landed on a different filename.
+init_checkpoint: third_party/diffab/trained_models/codesign_multicdrs.pt
