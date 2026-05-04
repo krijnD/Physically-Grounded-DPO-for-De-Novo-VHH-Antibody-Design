@@ -121,7 +121,13 @@ def _load_checkpoint_into(model: torch.nn.Module, ckpt_path: Path,
                           device: str) -> dict:
     """Best-effort state-dict loader. Returns the wrapping dict (so
     callers can read iteration/val_loss/etc.)."""
-    ck = torch.load(str(ckpt_path), map_location=device)
+    # weights_only=False: luost26/DiffAb's published checkpoint pickles
+    # an easydict.EasyDict (its original training config), which the
+    # torch>=2.6 default (weights_only=True) refuses. Our own checkpoints
+    # only contain tensors + plain dicts, but using False uniformly here
+    # keeps the loader compatible with both formats. Source is trusted
+    # (HF hub + locally produced).
+    ck = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     if isinstance(ck, dict) and "model" in ck:
         sd = ck["model"]
         meta = {k: v for k, v in ck.items() if k != "model"}
