@@ -362,6 +362,7 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
 | `data scripts/diagnose_rejections.py` | Classifies why each `ANDD_VHH_rejected_*.csv` row was rejected (which filter stage, whether a looser rule would recover it) — informed the J-motif and homodimer fixes in `curate_andd.py` |
 | `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
+| `scripts/diffab_ft/summarize_run.py` | Reduces a W&B export directory of a DiffAb fine-tune run to a compact markdown diagnostic (warmup detection, per-phase train-loss / grad-norm stats, val trajectory, best-val landmark). Stdlib-only |
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
 
@@ -438,6 +439,39 @@ python scripts/test_sabdab_judges.py \
 | `--ncores` | `1` | CPU cores for TNP folding |
 | `--chain` | `A` | Nanobody chain ID (plain PDB directory mode only) |
 | `--antigen-chain` | — | Antigen chain ID (plain PDB directory mode only) |
+
+---
+
+### Summarizing a fine-tune run (`scripts/diffab_ft/summarize_run.py`)
+
+A DiffAb fine-tune run produces thousands of per-step `train/*` data points and ~100 `val/*` data points across multiple metrics. Pasting raw CSVs or eyeballing W&B screenshots doesn't aggregate cleanly across runs and loses precision. `summarize_run.py` reduces a W&B export directory to a ~30-line markdown diagnostic suitable for thesis appendices, run-to-run comparison, or pasting into a chat for review.
+
+**What it reports:**
+- **Warmup ramp detection** — finds the iter at which `train/lr` plateaued, so post-warmup statistics are reported separately from warmup. Critical because the first ~1000 iters of a fine-tune have very different gradient/loss dynamics than steady state.
+- **Per-phase percentiles + slopes** for `train/loss` and `train/grad_norm`. Slope/1k captures whether train loss is drifting up (bad) or down (good); percentiles flag spikes hidden by means.
+- **Full val trajectory table** including per-component breakdowns (`val/loss_rot`, `loss_pos`, `loss_seq`).
+- **Best-val landmark + termination iter**, so "killed early vs converged vs diverged" is unambiguous.
+
+**Input format:** W&B "Export panel data" produces one CSV per panel/metric. Drop them all in one directory; metric names are parsed from headers (`<run> - <metric>`), filenames are ignored. Stdlib-only — no install step.
+
+```bash
+# Single run
+python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/
+
+# Side-by-side with a previous run
+python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
+  --compare-to runs/vhh_ft/seed42/wandb_export/
+
+# Save report to a file (e.g. for thesis appendix)
+python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
+  --out runs/vhh_ft/seed42_v2/diagnostic.md
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `input_dir` | *(required)* | Directory of W&B-exported panel CSVs |
+| `--compare-to` | — | Optional second directory; appended below the primary report for side-by-side comparison |
+| `--out` | stdout | Write the markdown report to this file instead of stdout |
 
 ---
 
