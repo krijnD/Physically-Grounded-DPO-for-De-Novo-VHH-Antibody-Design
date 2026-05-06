@@ -362,7 +362,7 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
 | `data scripts/diagnose_rejections.py` | Classifies why each `ANDD_VHH_rejected_*.csv` row was rejected (which filter stage, whether a looser rule would recover it) — informed the J-motif and homodimer fixes in `curate_andd.py` |
 | `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
-| `scripts/diffab_ft/export_wandb_run.py` | Pulls a W&B run's full step-by-step history from wandb.ai and writes one panel-format CSV per metric. Companion to `summarize_run.py`. Runs on the remote machine — no manual "Export panel data" clicking |
+| `scripts/diffab_ft/export_wandb_run.py` | Reads a finished W&B run's history (locally from the `.wandb` log file, or from wandb.ai if the local dir is gone) and writes one panel-format CSV per metric. Companion to `summarize_run.py`. No manual "Export panel data" clicking, no laptop round-trip |
 | `scripts/diffab_ft/summarize_run.py` | Reduces a W&B export directory of a DiffAb fine-tune run to a compact markdown diagnostic (warmup detection, per-phase train-loss / grad-norm stats, val trajectory, best-val landmark). Stdlib-only |
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
@@ -445,12 +445,12 @@ python scripts/test_sabdab_judges.py \
 
 ### DiffAb fine-tune run diagnostics (two-step pipeline)
 
-Standard workflow after a fine-tune run finishes on the remote machine: **export → summarize**. Both scripts run on Snellius (or wherever the venv lives) — no manual W&B web UI clicking, no laptop round-trip.
+Standard workflow after a fine-tune run finishes: **export → summarize**. Both scripts run wherever the training venv lives — typically on the same compute / login node that did the training. No web UI clicking, no laptop round-trip.
 
 ```bash
-# 1) Pull the run's history from wandb.ai → CSVs on disk
+# 1) Read the run's history from disk → CSVs
 python scripts/diffab_ft/export_wandb_run.py \
-    https://wandb.ai/<entity>/vhh-diffab-ft/runs/<run_id> \
+    runs/vhh_ft/seed42_v2 \
     --out-dir runs/vhh_ft/seed42_v2/wandb_export
 
 # 2) Summarize → markdown diagnostic
@@ -464,31 +464,37 @@ cat runs/vhh_ft/seed42_v2/diagnostic.md
 
 #### Step 1 — `export_wandb_run.py`
 
-Pulls a W&B run's full step-by-step history (no downsampling, via `run.scan_history()`) and writes one CSV per metric in panel-export format. The output is the exact shape `summarize_run.py` expects, so the two scripts compose end-to-end.
+Reads a finished W&B run's full step-by-step history (no downsampling) and writes one CSV per metric in panel-export format. Two modes, auto-detected from the argument:
 
-Authentication is whatever `wandb` already uses (`~/.netrc` / `WANDB_API_KEY` / `wandb login` on the login node). The `<run>` argument accepts either `entity/project/run_id` or a full wandb.ai URL pasted from the browser address bar.
+- **Local mode (default for any path that exists on disk):** parses the binary `.wandb` log file that `wandb` writes alongside every run. No network needed. Works for both online and offline runs — the binary is present either way. The path can point at the run output dir (e.g. `runs/vhh_ft/seed42_v2`), the `wandb/` subdir, a specific `run-<id>/` dir or `latest-run` symlink, or the `.wandb` file directly. The script walks down to find the binary automatically.
+- **Cloud mode (any non-path):** uses `wandb.Api()` to fetch history from wandb.ai. Useful only when the local run dir is gone. Authentication uses whatever `wandb` already has (`~/.netrc` / `WANDB_API_KEY` / `wandb login`).
 
 ```bash
-# Default: export every numeric metric the run logged
-python scripts/diffab_ft/export_wandb_run.py <run_url> \
+# Local mode (typical): point at the run output dir
+python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
   --out-dir runs/vhh_ft/seed42_v2/wandb_export
 
 # Restrict to train/* and val/* (skip W&B internals + custom non-numeric)
-python scripts/diffab_ft/export_wandb_run.py <run_url> \
+python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
   --out-dir runs/vhh_ft/seed42_v2/wandb_export \
   --include train/ val/
 
-# Override the column-header label (useful if run.name is auto-generated)
-python scripts/diffab_ft/export_wandb_run.py <run_url> \
+# Cloud mode: pass a wandb.ai URL or 'entity/project/run_id'
+python scripts/diffab_ft/export_wandb_run.py \
+  https://wandb.ai/<entity>/vhh-diffab-ft/runs/<run_id> \
+  --out-dir /tmp/old_run_export
+
+# Override the column-header label (defaults to the run dir name)
+python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
   --out-dir runs/vhh_ft/seed42_v2/wandb_export \
   --run-label seed42_v2
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `run` | *(required)* | W&B run identifier: `entity/project/run_id` or a wandb.ai URL |
+| `source` | *(required)* | Local path (run dir, wandb/ subdir, run-`<id>`/, or `.wandb` file) **or** wandb.ai URL **or** `entity/project/run_id` |
 | `--out-dir` | *(required)* | Directory to write per-metric CSVs into (created if needed) |
-| `--run-label` | run.name | String used in CSV column headers (`<label> - <metric>`) |
+| `--run-label` | run-dir name | String used in CSV column headers (`<label> - <metric>`) |
 | `--include` | all | Only export metrics whose key starts with any of these prefixes (e.g. `train/ val/`) |
 | `--exclude` | none | Exclude metrics whose key starts with any of these prefixes |
 
