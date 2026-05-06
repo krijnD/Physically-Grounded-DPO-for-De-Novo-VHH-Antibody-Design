@@ -28,24 +28,32 @@ train:
     pos: 1.0
     seq: 1.0
   max_iters: 20000
-  val_freq: 250
+  val_freq: 200
   batch_size: 8
   seed: 42
   max_grad_norm: 1.0
   ema_decay: 0.999
-  early_stop_patience: 5
+  early_stop_patience: 20
   save_top_k: 3
   optimizer:
     type: adam
-    lr: 5.0e-5
+    lr: 1.0e-5
     weight_decay: 0.01
     beta1: 0.9
     beta2: 0.999
   scheduler:
     type: plateau
-    factor: 0.8
-    patience: 10
-    min_lr: 5.0e-6
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-6
+  # Linear warmup of the optimizer LR from 0 → optimizer.lr over `max_iters`
+  # iterations, applied multiplicatively on top of the plateau scheduler.
+  # Needed because Adam's second-moment buffers are reset on fine-tune
+  # restart; without warmup the first ~1000 steps overshoot and damage the
+  # pretrained init (observed empirically on seed42: train/loss climbed
+  # from iter 0). Stepped once per training iteration in train.py.
+  warmup:
+    max_iters: 1000
 
 dataset:
   train:
@@ -55,8 +63,13 @@ dataset:
     processed_dir: data/processed/vhh_ft   # arm-specific LMDB
     splits_path:   data/datasets/clustering/cluster_splits.json
     split: train
+    # AbDPO scopes π_ref to CDR-H3 only (Zhou et al., NeurIPS 2024). We
+    # match that scope here so the fine-tune objective equals the DPO
+    # objective; this also fixes a train/val asymmetry in the seed42 run
+    # where train minimized H1+H2+H3 while val measured CDR3 only.
     transform:
-      - type: mask_multiple_cdrs
+      - type: mask_single_cdr
+        selection: CDR3
       - type: merge_chains
       - type: patch_around_anchor
 

@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import shutil
 import sys
 import time
@@ -83,6 +84,26 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
+
+# Fixed seed for the val DataLoader workers. Holding this constant across
+# every validation pass makes the random CDR3 boundary shrink/extend in
+# `random_shrink_extend` (third_party/diffab/.../mask.py) reproducible, so
+# the val/loss curve, top-K, and early-stop decisions are not at the
+# mercy of per-pass masking variance — important on a 22-example val set.
+VAL_RNG_SEED = 12345
+
+
+def _val_worker_init_fn(worker_id: int) -> None:
+    """Seed worker RNGs deterministically for the val DataLoader.
+
+    With ``persistent_workers=False`` (DataLoader default), workers are
+    respawned every time we iterate ``val_loader``; this hook fires on
+    each spawn, so every validation pass sees the same masking on the
+    same examples.
+    """
+    seed = VAL_RNG_SEED + worker_id
+    random.seed(seed)
+    torch.manual_seed(seed)
 
 # ── Project paths ────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -98,7 +119,7 @@ from diffab.utils.misc import (  # noqa: E402
 )
 from diffab.utils.train import (  # noqa: E402
     ValidationLossTape, count_parameters, get_optimizer, get_scheduler,
-    recursive_to, sum_weighted_losses,
+    get_warmup_sched, recursive_to, sum_weighted_losses,
 )
 
 # ── Our dataset adapter (registers ``vhh_andd``) ─────────────────────────
@@ -142,11 +163,12 @@ def _save_ema_checkpoint(
 
 def _save_full_state(
     path: Path, model, ema_model: AveragedModel, optimizer, scheduler,
+    warmup_sched, has_warmup: bool,
     iteration: int, val_loss: float, config: dict, best_val: float,
     history: list,
 ) -> None:
     """Heavy state for resumption (raw + EMA + optimizer + scheduler)."""
-    torch.save({
+    state = {
         "model": model.state_dict(),
         "ema_model": ema_model.module.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -157,7 +179,13 @@ def _save_full_state(
         "history": history,  # list of (iteration, val_loss) pairs
         "config": config,
         "ema": False,
-    }, path)
+    }
+    if has_warmup:
+        # LambdaLR.state_dict() round-trips cleanly. Only persist when
+        # warmup is enabled so resuming from a pre-warmup checkpoint
+        # without a warmup config doesn't try to restore stale state.
+        state["warmup_sched"] = warmup_sched.state_dict()
+    torch.save(state, path)
 
 
 class TopKCheckpointer:
@@ -258,6 +286,7 @@ def main() -> int:
         collate_fn=PaddingCollate(),
         shuffle=False,
         num_workers=args.num_workers,
+        worker_init_fn=_val_worker_init_fn,
     )
     train_iterator = inf_iterator(train_loader)
     if args.debug:
@@ -307,6 +336,16 @@ def main() -> int:
     # ── Optimizer / scheduler ──────────────────────────────────────
     optimizer = get_optimizer(config.train.optimizer, model)
     scheduler = get_scheduler(config.train.scheduler, optimizer)
+    # Optional linear LR warmup. Composes multiplicatively with the
+    # plateau scheduler: ``LambdaLR`` (warmup) scales the base LR and is
+    # stepped every iteration; ``ReduceLROnPlateau`` mutates the base
+    # LR and is stepped per validation. Standard PyTorch idiom — they
+    # don't fight because they touch different things in
+    # ``param_groups``. ``BlackHole`` is the no-op fallback when no
+    # warmup config is given.
+    warmup_cfg = config.train.get("warmup")
+    warmup_sched = get_warmup_sched(warmup_cfg, optimizer)
+    has_warmup = warmup_cfg is not None
     optimizer.zero_grad()
 
     it_first = 1
@@ -325,6 +364,13 @@ def main() -> int:
         ema_model.module.load_state_dict(ck["ema_model"])
         optimizer.load_state_dict(ck["optimizer"])
         scheduler.load_state_dict(ck["scheduler"])
+        if has_warmup and "warmup_sched" in ck:
+            warmup_sched.load_state_dict(ck["warmup_sched"])
+        elif has_warmup:
+            logger.warning(
+                "Resuming with warmup enabled but checkpoint has no "
+                "warmup state; warmup will restart from iter 0."
+            )
         it_first = ck["iteration"] + 1
         best_val = ck.get("best_val", float("inf"))
         history = ck.get("history", [])
@@ -374,6 +420,9 @@ def main() -> int:
         loss.backward()
         grad_norm = clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
+        # Warmup is per-iteration; stepping after optimizer.step() is the
+        # canonical PyTorch order for LambdaLR.
+        warmup_sched.step()
         optimizer.zero_grad()
 
         # EMA update happens AFTER the step, on the freshly updated
@@ -417,6 +466,11 @@ def main() -> int:
             scheduler.step()
         return float(avg)
 
+    if has_warmup:
+        logger.info(
+            "Linear LR warmup enabled: 0 → optimizer.lr over %d iterations.",
+            int(warmup_cfg.max_iters),
+        )
     logger.info("Starting training: iters %d → %d (val every %d, patience=%d).",
                 it_first, max_iters, val_freq, patience)
     t_train_start = time.time()
@@ -470,6 +524,7 @@ def main() -> int:
                 _save_full_state(
                     ckpt_dir / f"state_{it}.pt",
                     model, ema_model, optimizer, scheduler,
+                    warmup_sched, has_warmup,
                     it, val_loss, dict(config), best_val, history,
                 )
                 # Keep only the latest full-state to bound disk usage.
@@ -491,6 +546,7 @@ def main() -> int:
         _save_full_state(
             ckpt_dir / "state_interrupted.pt",
             model, ema_model, optimizer, scheduler,
+            warmup_sched, has_warmup,
             it, history[-1][1] if history else float("nan"),
             dict(config), best_val, history,
         )
