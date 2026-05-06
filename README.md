@@ -362,6 +362,7 @@ wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/
 | `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
 | `data scripts/diagnose_rejections.py` | Classifies why each `ANDD_VHH_rejected_*.csv` row was rejected (which filter stage, whether a looser rule would recover it) — informed the J-motif and homodimer fixes in `curate_andd.py` |
 | `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
+| `scripts/diffab_ft/export_wandb_run.py` | Pulls a W&B run's full step-by-step history from wandb.ai and writes one panel-format CSV per metric. Companion to `summarize_run.py`. Runs on the remote machine — no manual "Export panel data" clicking |
 | `scripts/diffab_ft/summarize_run.py` | Reduces a W&B export directory of a DiffAb fine-tune run to a compact markdown diagnostic (warmup detection, per-phase train-loss / grad-norm stats, val trajectory, best-val landmark). Stdlib-only |
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
@@ -442,9 +443,58 @@ python scripts/test_sabdab_judges.py \
 
 ---
 
-### Summarizing a fine-tune run (`scripts/diffab_ft/summarize_run.py`)
+### DiffAb fine-tune run diagnostics (two-step pipeline)
 
-A DiffAb fine-tune run produces thousands of per-step `train/*` data points and ~100 `val/*` data points across multiple metrics. Pasting raw CSVs or eyeballing W&B screenshots doesn't aggregate cleanly across runs and loses precision. `summarize_run.py` reduces a W&B export directory to a ~30-line markdown diagnostic suitable for thesis appendices, run-to-run comparison, or pasting into a chat for review.
+Standard workflow after a fine-tune run finishes on the remote machine: **export → summarize**. Both scripts run on Snellius (or wherever the venv lives) — no manual W&B web UI clicking, no laptop round-trip.
+
+```bash
+# 1) Pull the run's history from wandb.ai → CSVs on disk
+python scripts/diffab_ft/export_wandb_run.py \
+    https://wandb.ai/<entity>/vhh-diffab-ft/runs/<run_id> \
+    --out-dir runs/vhh_ft/seed42_v2/wandb_export
+
+# 2) Summarize → markdown diagnostic
+python scripts/diffab_ft/summarize_run.py \
+    runs/vhh_ft/seed42_v2/wandb_export \
+    --out runs/vhh_ft/seed42_v2/diagnostic.md
+
+# 3) Read / share the report
+cat runs/vhh_ft/seed42_v2/diagnostic.md
+```
+
+#### Step 1 — `export_wandb_run.py`
+
+Pulls a W&B run's full step-by-step history (no downsampling, via `run.scan_history()`) and writes one CSV per metric in panel-export format. The output is the exact shape `summarize_run.py` expects, so the two scripts compose end-to-end.
+
+Authentication is whatever `wandb` already uses (`~/.netrc` / `WANDB_API_KEY` / `wandb login` on the login node). The `<run>` argument accepts either `entity/project/run_id` or a full wandb.ai URL pasted from the browser address bar.
+
+```bash
+# Default: export every numeric metric the run logged
+python scripts/diffab_ft/export_wandb_run.py <run_url> \
+  --out-dir runs/vhh_ft/seed42_v2/wandb_export
+
+# Restrict to train/* and val/* (skip W&B internals + custom non-numeric)
+python scripts/diffab_ft/export_wandb_run.py <run_url> \
+  --out-dir runs/vhh_ft/seed42_v2/wandb_export \
+  --include train/ val/
+
+# Override the column-header label (useful if run.name is auto-generated)
+python scripts/diffab_ft/export_wandb_run.py <run_url> \
+  --out-dir runs/vhh_ft/seed42_v2/wandb_export \
+  --run-label seed42_v2
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `run` | *(required)* | W&B run identifier: `entity/project/run_id` or a wandb.ai URL |
+| `--out-dir` | *(required)* | Directory to write per-metric CSVs into (created if needed) |
+| `--run-label` | run.name | String used in CSV column headers (`<label> - <metric>`) |
+| `--include` | all | Only export metrics whose key starts with any of these prefixes (e.g. `train/ val/`) |
+| `--exclude` | none | Exclude metrics whose key starts with any of these prefixes |
+
+#### Step 2 — `summarize_run.py`
+
+Reduces an export directory to a ~30-line markdown diagnostic suitable for thesis appendices, run-to-run comparison, or pasting into a chat for review. Stdlib-only — no install step.
 
 **What it reports:**
 - **Warmup ramp detection** — finds the iter at which `train/lr` plateaued, so post-warmup statistics are reported separately from warmup. Critical because the first ~1000 iters of a fine-tune have very different gradient/loss dynamics than steady state.
@@ -452,13 +502,11 @@ A DiffAb fine-tune run produces thousands of per-step `train/*` data points and 
 - **Full val trajectory table** including per-component breakdowns (`val/loss_rot`, `loss_pos`, `loss_seq`).
 - **Best-val landmark + termination iter**, so "killed early vs converged vs diverged" is unambiguous.
 
-**Input format:** W&B "Export panel data" produces one CSV per panel/metric. Drop them all in one directory; metric names are parsed from headers (`<run> - <metric>`), filenames are ignored. Stdlib-only — no install step.
-
 ```bash
 # Single run
 python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/
 
-# Side-by-side with a previous run
+# Side-by-side with a previous run (also uses export_wandb_run.py output)
 python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
   --compare-to runs/vhh_ft/seed42/wandb_export/
 
@@ -469,7 +517,7 @@ python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
 
 | Flag | Default | Description |
 |---|---|---|
-| `input_dir` | *(required)* | Directory of W&B-exported panel CSVs |
+| `input_dir` | *(required)* | Directory of panel-format CSVs (output of `export_wandb_run.py` or W&B's web "Export panel data") |
 | `--compare-to` | — | Optional second directory; appended below the primary report for side-by-side comparison |
 | `--out` | stdout | Write the markdown report to this file instead of stdout |
 
