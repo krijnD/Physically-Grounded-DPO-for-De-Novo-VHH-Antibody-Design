@@ -450,7 +450,15 @@ def main() -> int:
         }
 
     @torch.no_grad()
-    def _validate(it: int) -> float:
+    def _validate(it: int) -> dict:
+        """Run validation and return per-component EMA val losses.
+
+        Returns the full ``{rot, pos, seq, overall}`` dict so we can log
+        each component to W&B — the seed42 diagnostic specifically
+        depended on which loss component moved (rot improved most, seq
+        modestly, pos basically not). With only ``val/loss`` (overall)
+        logged this story is invisible in the dashboard.
+        """
         ema_model.eval()
         tape = ValidationLossTape()
         for batch in val_loader:
@@ -459,12 +467,19 @@ def main() -> int:
             loss = sum_weighted_losses(loss_dict, loss_weights)
             loss_dict["overall"] = loss
             tape.update(loss_dict, 1)
-        avg = tape.log(it, logger, writer, "val")
+        avg_overall = tape.log(it, logger, writer, "val")
+        # tape.accumulate holds summed component tensors; divide by tape
+        # total to get the same per-component averages tape.log uses
+        # internally.
+        val_components = {
+            k: float(v.item() / tape.total)
+            for k, v in tape.accumulate.items()
+        }
         if config.train.scheduler.type == "plateau":
-            scheduler.step(avg)
+            scheduler.step(avg_overall)
         else:
             scheduler.step()
-        return float(avg)
+        return val_components
 
     if has_warmup:
         logger.info(
@@ -491,13 +506,23 @@ def main() -> int:
                            if k != "iter"}, step=it)
 
             if it % val_freq == 0 or it == max_iters:
-                val_loss = _validate(it)
+                val_components = _validate(it)
+                val_loss = val_components["overall"]
                 history.append((it, val_loss))
                 logger.info("iter %d | EMA val loss %.4f (best %.4f)",
                             it, val_loss, best_val)
                 if use_wandb:
-                    wandb.log({"val/loss": val_loss, "val/best": best_val},
-                              step=it)
+                    # ``val/loss`` mirrors the seed42 metric name for
+                    # cross-run comparison; per-component scalars give
+                    # the diagnostic breakdown (rot/pos/seq).
+                    payload = {
+                        f"val/loss_{k}": v
+                        for k, v in val_components.items()
+                        if k != "overall"
+                    }
+                    payload["val/loss"] = val_loss
+                    payload["val/best"] = best_val
+                    wandb.log(payload, step=it)
 
                 # Top-K save.
                 topk.maybe_save(it, val_loss, ema_model, dict(config))
