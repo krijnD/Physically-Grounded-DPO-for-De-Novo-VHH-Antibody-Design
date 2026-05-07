@@ -63,13 +63,16 @@ dataset:
     processed_dir: data/processed/vhh_ft   # arm-specific LMDB
     splits_path:   data/datasets/clustering/cluster_splits.json
     split: train
-    # AbDPO scopes π_ref to CDR-H3 only (Zhou et al., NeurIPS 2024). We
-    # match that scope here so the fine-tune objective equals the DPO
-    # objective; this also fixes a train/val asymmetry in the seed42 run
-    # where train minimized H1+H2+H3 while val measured CDR3 only.
+    # Multi-CDR scope (H1+H2+H3): the proposal's TNP/Rosetta/Biology judges
+    # evaluate whole-structure properties (global PSH, CDR-vicinity PPC
+    # spanning all three CDRs, whole-structure energies), so π_ref must be
+    # a competent generator for any CDR. AbDPO restricts to CDR-H3 only
+    # (Zhou et al., NeurIPS 2024); seed42_v2 was the AbDPO-faithful
+    # ablation. seed42_v3 extends scope to multi-CDR to align with this
+    # thesis's broader judges. mask_multiple_cdrs randomly masks 1–N of
+    # the available CDRs per example (N=3 for VHH heavy-only).
     transform:
-      - type: mask_single_cdr
-        selection: CDR3
+      - type: mask_multiple_cdrs
       - type: merge_chains
       - type: patch_around_anchor
 
@@ -80,9 +83,13 @@ dataset:
     processed_dir: data/processed/vhh_ft
     splits_path:   data/datasets/clustering/cluster_splits.json
     split: val
+    # Match train scope to avoid the train/val objective asymmetry that
+    # afflicted seed42 (train multi-CDR vs val CDR3-only). Worker-RNG
+    # seeding in train.py (_val_worker_init_fn) keeps masking deterministic
+    # across validation passes despite mask_multiple_cdrs's per-example
+    # randomness, so val/loss remains a stable early-stop signal.
     transform:
-      - type: mask_single_cdr
-        selection: CDR3
+      - type: mask_multiple_cdrs
       - type: merge_chains
       - type: patch_around_anchor
 
