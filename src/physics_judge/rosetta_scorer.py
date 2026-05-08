@@ -5,13 +5,17 @@ no other module needs to import PyRosetta directly.  Provides:
 
   - CDR loop refinement via constrained FastRelax on CDR H1/H2/H3
   - E_Rep extraction (fa_rep at the interface) for steric clash detection
-  - delta_G_bind via InterfaceAnalyzerMover for binding affinity
+  - CDR per-residue energy (AbDPO-style residue-level total energy
+    summed over CDR residues, normalized by CDR length for scope-
+    invariance)
 
 Uses lazy initialization: PyRosetta is initialized exactly once on first
 call to any scoring function.
 
 References:
-  - Zhou et al. (NeurIPS 2024), AbDPO — energy decomposition methodology
+  - Zhou et al. (NeurIPS 2024), AbDPO — residue-level CDR energy:
+    ε(R⁰) = Σⱼ ε(R⁰[j]) summed over CDR-H3 residues. We extend to
+    multi-CDR (H1+H2+H3) and normalize by N_CDR_residues.
   - Alford et al. (2017), ref2015 score function
 """
 
@@ -50,11 +54,14 @@ class PhysicsScores:
     """Container for Physics Judge energy metrics."""
 
     e_rep: float
-    delta_g: Optional[float] = None  # None when fast-failed on e_rep
-    # True when delta_G came back non-physical (|dg| > DELTA_G_PATHOLOGICAL),
-    # i.e. structure prep couldn't resolve clashes in the bound state.
-    # When set, delta_g is nulled out and the judge emits
-    # "skipped_scoring_failure" rather than "fail_delta_g".
+    # AbDPO-style per-residue CDR energy (REU/residue).  None when the
+    # E_Rep fast-fail gate tripped and we skipped the expensive scoring.
+    cdr_energy_per_res: Optional[float] = None
+    # True when CDR energy came back non-physical
+    # (|E_cdr| > CDR_ENERGY_PATHOLOGICAL REU/residue), i.e. structure
+    # prep couldn't resolve clashes in the bound state.  When set,
+    # cdr_energy_per_res is nulled out and the judge emits
+    # "skipped_scoring_failure" rather than "fail_cdr_energy".
     scoring_failed: bool = False
 
 
@@ -352,37 +359,72 @@ def compute_e_rep(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
     return mean_fa_rep
 
 
-def compute_delta_g(pose, interface: str = Config.ROSETTA_INTERFACE) -> float:
-    """Compute binding free energy (delta_G) via InterfaceAnalyzerMover.
+def compute_cdr_energy_per_res(
+    pose,
+    nanobody_chain_id: str = "H",
+    cdr_ranges: list[tuple[int, int]] = Config.VHH_CDR_RANGES,
+) -> Optional[float]:
+    """Compute mean Rosetta total energy across CDR residues (REU/residue).
 
-    Separates the complex into unbound chains, repacks the exposed
-    interface residues (``pack_separated=True``), and computes:
+    Implements the AbDPO residue-level energy from Zhou et al.
+    NeurIPS 2024 (§3.2):
 
-        delta_G = E_complex - (E_antibody + E_antigen)
+        ε(R⁰) = Σⱼ ε(R⁰[j])     for j in CDR residues
 
-    Supports multi-chain antigens natively — InterfaceAnalyzerMover
-    accepts ``"D_ABC"`` format (concatenated chain letters per group).
+    additionally normalized by ``N_CDR_residues`` to make the metric
+    scope-invariant — the same threshold (-0.2 REU/residue) applies
+    whether we score CDR-H3 only (AbDPO ablation) or the full
+    H1+H2+H3 set (multi-CDR π_ref scope).
+
+    Computed in the bound complex: ``residue_total_energy(i)`` already
+    captures all interactions involving residue ``i`` including those
+    with antigen, so this is a binding-context energy not a separated
+    monomer energy.
 
     Args:
-        pose: PyRosetta Pose of the complex (will be modified by the mover).
-        interface: Interface definition string (e.g. ``"H_A"`` or ``"D_ACB"``).
+        pose: PyRosetta Pose of the complex (scored in place).
+        nanobody_chain_id: Chain letter of the nanobody (e.g. ``"H"``).
+        cdr_ranges: Kabat-numbered CDR boundaries (default: H1+H2+H3).
 
     Returns:
-        Binding free energy (dG_separated) in REU.  More negative = tighter.
+        Mean Rosetta total energy per CDR residue in REU/residue, or
+        ``None`` if no CDR residues could be located in the pose
+        (numbering mismatch).
     """
     import pyrosetta
-    from pyrosetta.rosetta.protocols.analysis import InterfaceAnalyzerMover
 
     sfxn = pyrosetta.create_score_function("ref2015")
+    sfxn(pose)
 
-    iam = InterfaceAnalyzerMover(interface)
-    iam.set_pack_separated(True)
-    iam.set_scorefunction(sfxn)
-    iam.apply(pose)
+    pdb_info = pose.pdb_info()
+    if pdb_info is None:
+        logger.warning("Pose has no PDB info — cannot map CDR ranges.")
+        return None
 
-    dg = iam.get_interface_dG()
-    logger.info("delta_G at interface %s: %.3f REU", interface, dg)
-    return dg
+    energies = pose.energies()
+    total = 0.0
+    n_cdr = 0
+    for kabat_start, kabat_end in cdr_ranges:
+        for kabat_res in range(kabat_start, kabat_end + 1):
+            pose_idx = pdb_info.pdb2pose(nanobody_chain_id, kabat_res)
+            if pose_idx == 0:
+                continue
+            total += energies.residue_total_energy(pose_idx)
+            n_cdr += 1
+
+    if n_cdr == 0:
+        logger.warning(
+            "No CDR residues found in pose for chain %s — returning None.",
+            nanobody_chain_id,
+        )
+        return None
+
+    mean_per_res = total / n_cdr
+    logger.info(
+        "CDR energy: %.3f REU/residue mean (%.3f total over %d CDR residues, chain %s)",
+        mean_per_res, total, n_cdr, nanobody_chain_id,
+    )
+    return mean_per_res
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +439,7 @@ def score_complex(
     ccd_max_inner_cycles: int = Config.CCD_MAX_INNER_CYCLES,
     e_rep_fast_fail: float = Config.E_REP_REJECT,
 ) -> PhysicsScores:
-    """Score a nanobody–antigen complex for steric clashes and binding affinity.
+    """Score a nanobody–antigen complex for steric clashes and CDR binding energy.
 
     Pipeline:
       1. Load PDB → Pose
@@ -405,23 +447,27 @@ def score_complex(
          from raw crystal PDBs — essential to avoid million-REU blowups)
       3. FastRelax CDR loops (resolve residual CDR-local clashes)
       4. Compute E_Rep (fast)
-      5. If E_Rep ≤ threshold → compute delta_G (expensive)
-         If E_Rep > threshold → skip delta_G (fast-fail)
-      6. If |delta_G| exceeds DELTA_G_PATHOLOGICAL → flag scoring_failed
-         (prevents non-physical blowups from being labeled "weak binder")
+      5. If E_Rep ≤ threshold → compute CDR per-residue energy (expensive)
+         If E_Rep > threshold → skip CDR energy (fast-fail)
+      6. If |CDR_energy| exceeds CDR_ENERGY_PATHOLOGICAL → flag
+         scoring_failed (prevents non-physical blowups from being
+         labeled "weak binder")
 
     Args:
         complex_pdb_path: Path to the complex PDB file.
         nanobody_chain_id: Chain letter of the nanobody.
-        interface: PyRosetta interface string (e.g. ``"H_A"``).
-        cdr_ranges: Kabat-numbered CDR boundaries for CCD refinement.
+        interface: PyRosetta interface string (e.g. ``"H_A"``) — used
+                   only for the E_Rep selector, not for CDR energy.
+        cdr_ranges: Kabat-numbered CDR boundaries for CCD refinement
+                    AND for the CDR energy summation.
         ccd_outer_cycles: CCD outer cycles (AbDPO default: 1).
         ccd_max_inner_cycles: CCD inner cycles (AbDPO default: 10).
-        e_rep_fast_fail: E_Rep threshold for skipping delta_G computation.
+        e_rep_fast_fail: E_Rep threshold for skipping CDR energy.
 
     Returns:
         :class:`PhysicsScores` with ``e_rep`` always populated and
-        ``delta_g`` populated only if E_Rep passes the fast-fail gate.
+        ``cdr_energy_per_res`` populated only if E_Rep passes the
+        fast-fail gate.
     """
     _ensure_init()
 
@@ -461,26 +507,32 @@ def score_complex(
 
     if e_rep > e_rep_fast_fail:
         logger.info(
-            "E_Rep %.3f > %.1f REU — fast-failing, skipping delta_G.",
+            "E_Rep %.3f > %.1f REU — fast-failing, skipping CDR energy.",
             e_rep,
             e_rep_fast_fail,
         )
-        return PhysicsScores(e_rep=e_rep, delta_g=None)
+        return PhysicsScores(e_rep=e_rep, cdr_energy_per_res=None)
 
-    # Step 2: delta_G (expensive — only if E_Rep passes)
-    delta_g = compute_delta_g(pose, interface)
+    # Step 2: per-residue CDR energy (expensive — only if E_Rep passes)
+    cdr_energy = compute_cdr_energy_per_res(
+        pose,
+        nanobody_chain_id=nanobody_chain_id,
+        cdr_ranges=cdr_ranges,
+    )
 
-    # Pathological-value guard: if delta_G is outside the physical range
+    # Pathological-value guard: if CDR energy is outside the physical range
     # even after structure prep, the score is unreliable (likely residual
     # unresolvable clashes). Flag as scoring_failure rather than letting
     # it be misinterpreted as a weak-binder reject.
-    if abs(delta_g) > Config.DELTA_G_PATHOLOGICAL:
+    if cdr_energy is not None and abs(cdr_energy) > Config.CDR_ENERGY_PATHOLOGICAL:
         logger.warning(
-            "delta_G %.2f REU exceeds pathological threshold ±%.1f — "
+            "CDR energy %.2f REU/residue exceeds pathological threshold ±%.1f — "
             "marking scoring_failed (structure prep did not resolve clashes).",
-            delta_g,
-            Config.DELTA_G_PATHOLOGICAL,
+            cdr_energy,
+            Config.CDR_ENERGY_PATHOLOGICAL,
         )
-        return PhysicsScores(e_rep=e_rep, delta_g=None, scoring_failed=True)
+        return PhysicsScores(
+            e_rep=e_rep, cdr_energy_per_res=None, scoring_failed=True,
+        )
 
-    return PhysicsScores(e_rep=e_rep, delta_g=delta_g)
+    return PhysicsScores(e_rep=e_rep, cdr_energy_per_res=cdr_energy)
