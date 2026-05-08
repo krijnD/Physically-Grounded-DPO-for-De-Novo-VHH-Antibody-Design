@@ -42,8 +42,13 @@ class NanobodyCandidate:
     cdr3_length: Optional[int] = None
     biophysics_verdict: Optional[str] = None
 
-    # --- Physics Judge Metrics (Rosetta) ---
-    delta_g: Optional[float] = None
+    # --- Physics Judge Metrics (Rosetta, AbDPO residue-level CDR energy) ---
+    # Mean Rosetta total energy across CDR residues (REU/residue), per
+    # Zhou et al. NeurIPS 2024 §3.2, normalized by N_CDR_residues for
+    # scope-invariance. Replaces the legacy `delta_g` (which was full-
+    # interface dG_separated and on a different scale than the AbDPO
+    # threshold of -2.0 REU).
+    cdr_energy_per_res: Optional[float] = None
     e_rep: Optional[float] = None
     physics_verdict: Optional[str] = None
 
@@ -77,7 +82,7 @@ class NanobodyCandidate:
             "cdr3_length": self.cdr3_length,
             "biophysics_verdict": self.biophysics_verdict,
             # Physics
-            "delta_g": self.delta_g,
+            "cdr_energy_per_res": self.cdr_energy_per_res,
             "e_rep": self.e_rep,
             "physics_verdict": self.physics_verdict,
         }
