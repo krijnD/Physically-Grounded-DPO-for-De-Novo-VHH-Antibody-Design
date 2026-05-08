@@ -1,4 +1,4 @@
-"""Physics Judge: evaluates thermodynamic viability via Rosetta energy decomposition.
+"""Physics Judge: evaluates thermodynamic viability via Rosetta residue-level energies.
 
 Detects two classes of failure (Zhou et al., NeurIPS 2024 — AbDPO):
 
@@ -7,8 +7,13 @@ Detects two classes of failure (Zhou et al., NeurIPS 2024 — AbDPO):
      Fast-fail gate: checked first because it is cheap to compute.
 
   2. **Non-binders ("Rocks")**
-     delta_G_bind > -2.0 REU — thermodynamically inert interface.
-     Only evaluated if E_Rep passes (expensive InterfaceAnalyzer).
+     CDR energy > -0.2 REU/residue — CDR residues do not contribute
+     attractive (negative) energy in the bound complex, indicating a
+     thermodynamically inert interface.  Computed as the mean Rosetta
+     ``residue_total_energy`` across CDR residues per the AbDPO
+     residue-level formulation, additionally normalized by CDR length
+     for scope-invariance (CDR-H3-only or H1+H2+H3).
+     Only evaluated if E_Rep passes (expensive scoring step).
 
 Requires a **complex** PDB (nanobody + antigen) and chain identifiers.
 This is unlike the Biology/Biophysics judges which operate on the
@@ -24,11 +29,12 @@ emit ``"error"`` — both explicit rather than silent None.
 Decision flow:
   1. No complex PDB or no interface → physics_verdict = "skipped_no_antigen"
   2. Rosetta scoring raises → physics_verdict = "error"
-  3. Non-physical delta_G (|dg| > 1000 REU) → physics_verdict
-     = "skipped_scoring_failure" (structure prep couldn't resolve
-     clashes; distinct from a legitimate weak-binder reject)
+  3. Non-physical CDR energy (|E_cdr| > 100 REU/residue) →
+     physics_verdict = "skipped_scoring_failure" (structure prep
+     couldn't resolve clashes; distinct from a legitimate weak-binder
+     reject)
   4. E_Rep > 5.0 REU → fail_e_rep
-  5. delta_G > -2.0 REU → fail_delta_g
+  5. CDR energy > -0.2 REU/residue → fail_cdr_energy
   6. Both pass → physics_verdict = "pass"
 """
 
@@ -47,10 +53,10 @@ class PhysicsJudge:
     def __init__(
         self,
         e_rep_reject: float = Config.E_REP_REJECT,
-        delta_g_reject: float = Config.DELTA_G_REJECT,
+        cdr_energy_reject: float = Config.CDR_ENERGY_PER_RES_REJECT,
     ):
         self.e_rep_reject = e_rep_reject
-        self.delta_g_reject = delta_g_reject
+        self.cdr_energy_reject = cdr_energy_reject
 
     def evaluate(
         self,
@@ -69,8 +75,8 @@ class PhysicsJudge:
 
         Args:
             candidate: Candidate to score. Results are written to
-                       ``candidate.e_rep``, ``candidate.delta_g``, and
-                       ``candidate.physics_verdict``.
+                       ``candidate.e_rep``, ``candidate.cdr_energy_per_res``,
+                       and ``candidate.physics_verdict``.
             complex_pdb_path: Path to the complex PDB (nanobody + antigen),
                               or ``None`` to emit ``skipped_no_antigen``.
             nanobody_chain_id: Chain letter of the nanobody in the PDB.
@@ -116,16 +122,16 @@ class PhysicsJudge:
 
         # Populate metrics on the candidate
         candidate.e_rep = scores.e_rep
-        candidate.delta_g = scores.delta_g
+        candidate.cdr_energy_per_res = scores.cdr_energy_per_res
 
-        # ── Scoring-failure gate: non-physical delta_G ──
-        # The scorer sets this flag when |delta_G| exceeds the pathological
+        # ── Scoring-failure gate: non-physical CDR energy ──
+        # The scorer sets this flag when |E_cdr| exceeds the pathological
         # threshold, meaning structure prep could not resolve clashes.
         # Treat as a scoring skip, not a weak-binder reject — otherwise
         # DPO pair selection treats unscored blowups as negatives.
         if scores.scoring_failed:
             logger.info(
-                "Candidate %s: non-physical delta_G detected — "
+                "Candidate %s: non-physical CDR energy detected — "
                 "physics_verdict = skipped_scoring_failure.",
                 candidate.candidate_id,
             )
@@ -141,13 +147,16 @@ class PhysicsJudge:
             candidate.physics_verdict = "fail_e_rep"
             return candidate
 
-        # ── delta_G: binding affinity check ──
-        if candidate.delta_g is not None and candidate.delta_g > self.delta_g_reject:
+        # ── CDR energy: residue-level binding affinity check (AbDPO) ──
+        if (
+            candidate.cdr_energy_per_res is not None
+            and candidate.cdr_energy_per_res > self.cdr_energy_reject
+        ):
             candidate.fail_candidate(
-                f"Physics: delta_G {candidate.delta_g:.3f} > "
-                f"{self.delta_g_reject} REU (non-binder)"
+                f"Physics: CDR energy {candidate.cdr_energy_per_res:.3f} > "
+                f"{self.cdr_energy_reject} REU/residue (non-binder)"
             )
-            candidate.physics_verdict = "fail_delta_g"
+            candidate.physics_verdict = "fail_cdr_energy"
             return candidate
 
         candidate.physics_verdict = "pass"
