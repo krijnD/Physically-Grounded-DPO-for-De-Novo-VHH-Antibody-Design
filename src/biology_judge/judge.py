@@ -100,7 +100,8 @@ class BiologyJudge:
 
                     if sap > self.sap_threshold:
                         candidate.fail_candidate(
-                            f"Biology: {flag} unshielded (SAP: {sap:.1f} > {self.sap_threshold})."
+                            f"Biology: {flag} unshielded "
+                            f"(SAP: {sap:.3f} > {self.sap_threshold:.3f})."
                         )
                         candidate.biology_verdict = "fail_conditional"
                         return candidate
