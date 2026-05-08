@@ -307,10 +307,14 @@ def main():
                     interface=interface,
                 )
                 e_rep_str = f"{candidate.e_rep:.3f}" if candidate.e_rep is not None else "N/A"
-                dg_str = f"{candidate.delta_g:.3f}" if candidate.delta_g is not None else "N/A"
+                ce_str = (
+                    f"{candidate.cdr_energy_per_res:.3f}"
+                    if candidate.cdr_energy_per_res is not None
+                    else "N/A"
+                )
                 logger.info(
-                    "  Physics: %s (E_Rep=%s, dG=%s)",
-                    candidate.physics_verdict, e_rep_str, dg_str,
+                    "  Physics: %s (E_Rep=%s, E_cdr=%s REU/res)",
+                    candidate.physics_verdict, e_rep_str, ce_str,
                 )
         else:
             # Call the judge so it sets the explicit verdict itself.
@@ -372,7 +376,7 @@ def main():
         "biophysics_verdict",
         "physics_verdict",
         "e_rep",
-        "delta_g",
+        "cdr_energy_per_res",
     ]
     print("\n" + df[cols].to_string(index=False))
 
