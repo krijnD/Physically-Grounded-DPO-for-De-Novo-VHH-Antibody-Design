@@ -1,27 +1,46 @@
 """Centralized thresholds and constants for all judges and masking.
 
 Sources:
-- Biology: Pipeline design document (Dignum, 2026)
+- Biology (SAP): Chennamsetty et al. (2009) PNAS, Black & Mould (1991) Proteins,
+                 Tien et al. (2013) PLOS ONE (max sidechain SASA)
 - Biophysics: Gordon et al. (2026), Therapeutic Nanobody Profiler
-- Physics: Zhou et al. (NeurIPS 2024), AbDPO
+- Physics: Zhou et al. (NeurIPS 2024), AbDPO — residue-level CDR energy
 - Masking: Paratope definition (Leem et al.), anchor protection (GeoGAD, AbFlex),
            FR2 hallmarks (Mitchell & Colwell, 2018)
 """
 
 
 class Config:
-    # ── Biology Judge ──
-    SAP_SAFETY_THRESHOLD: float = 150.0
+    # ── Biology Judge (normalized localized SAP) ──
+    # Per-neighbor contribution = (SASA_residue / SASA_max_residue) × hydropathy_BM,
+    # averaged over neighbors within SAP_RADIUS. Both factors are bounded ∈ [-1,+1],
+    # so the average is also ∈ [-1,+1]. Positive = exposed-hydrophobic neighborhood
+    # (aggregation risk); negative = polar-shielded (compensated by CDR loops).
+    # Threshold of +0.15 corresponds to Chennamsetty/Sankar "aggregation-prone"
+    # surface — never derived from this project's data, taken from literature.
+    SAP_SAFETY_THRESHOLD: float = 0.15
     SAP_RADIUS: float = 10.0  # Angstroms
 
-    # Kyte-Doolittle-derived hydrophobicity scale for SAP calculation
-    HYDROPHOBICITY_SCALE: dict[str, float] = {
-        "ILE": 4.5, "VAL": 4.2, "LEU": 3.8, "PHE": 2.8,
-        "CYS": 2.5, "MET": 1.9, "ALA": 1.8,
-        "GLY": -0.4, "THR": -0.7, "SER": -0.8, "TRP": -0.9,
-        "TYR": -1.3, "PRO": -1.6,
-        "HIS": -3.2, "GLN": -3.5, "GLU": -3.5, "ASP": -3.5,
-        "ASN": -3.5, "LYS": -3.9, "ARG": -4.5,
+    # Black & Mould (1991) normalized hydrophobicity scale (3-letter keys),
+    # ranging F=+1.00 (most hydrophobic) to R=-1.00 (most hydrophilic).
+    # This is the scale Chennamsetty (2009) PNAS used for the original SAP.
+    BLACK_MOULD_HYDROPHOBICITY: dict[str, float] = {
+        "PHE":  1.00, "MET":  0.83, "ILE":  0.81, "LEU":  0.73,
+        "VAL":  0.51, "CYS":  0.40, "TRP":  0.25, "ALA":  0.25,
+        "THR":  0.10, "GLY": -0.06, "SER": -0.30, "PRO": -0.40,
+        "TYR": -0.42, "HIS": -0.46, "GLN": -0.52, "ASN": -0.54,
+        "GLU": -0.62, "ASP": -0.78, "LYS": -0.92, "ARG": -1.00,
+    }
+
+    # Tien et al. (2013) "theoretical" maximum total SASA per residue type (Å²),
+    # used to normalize Shrake-Rupley-computed residue SASA into a [0,1] fraction.
+    # Whole-residue (sidechain + backbone) values; fractions clamped at 1.0.
+    MAX_RESIDUE_SASA: dict[str, float] = {
+        "ALA": 129.0, "ARG": 274.0, "ASN": 195.0, "ASP": 193.0,
+        "CYS": 167.0, "GLU": 223.0, "GLN": 225.0, "GLY": 104.0,
+        "HIS": 224.0, "ILE": 197.0, "LEU": 201.0, "LYS": 236.0,
+        "MET": 224.0, "PHE": 240.0, "PRO": 159.0, "SER": 155.0,
+        "THR": 172.0, "TRP": 285.0, "TYR": 263.0, "VAL": 174.0,
     }
 
     # Residues that flag CDR3 hydrophobic override risk
@@ -40,14 +59,21 @@ class Config:
     # TNP runtime
     TNP_NCORES: int = 1
 
-    # ── Physics Judge (Rosetta) ──
-    DELTA_G_REJECT: float = -2.0   # > -2.0 REU → non-binder "Rock"
-    E_REP_REJECT: float = 5.0      # > 5.0 REU → steric clash
-    # Any |delta_G| beyond this is non-physical (Rosetta scoring blowup
+    # ── Physics Judge (Rosetta, AbDPO-style residue-level CDR energy) ──
+    # Mean Rosetta total energy across CDR residues (REU/residue), per
+    # Zhou et al. NeurIPS 2024 §3.2: ε(R⁰) = Σⱼ ε(R⁰[j]) summed over CDR
+    # residues, here additionally divided by N_CDR_residues for scope-
+    # invariance (works under CDR-H3-only or multi-CDR π_ref scope).
+    # AbDPO reports natural-antibody CDR-H3 sum ≈ -1.83 REU on ~10
+    # residues → ~-0.18 REU/residue. Threshold rejects entries with
+    # mean > -0.2 REU/residue as non-binders ("Rocks").
+    CDR_ENERGY_PER_RES_REJECT: float = -0.2  # REU/residue
+    E_REP_REJECT: float = 5.0                # > 5.0 REU → steric clash
+    # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
-    DELTA_G_PATHOLOGICAL: float = 1000.0
-    ROSETTA_INTERFACE: str = "H_A"  # Chain interface for InterfaceAnalyzerMover
+    CDR_ENERGY_PATHOLOGICAL: float = 100.0   # REU/residue
+    ROSETTA_INTERFACE: str = "H_A"  # Chain interface for E_Rep selector
     CCD_OUTER_CYCLES: int = 1      # AbDPO-specified LoopMover_Refine_CCD param
     CCD_MAX_INNER_CYCLES: int = 10  # AbDPO-specified LoopMover_Refine_CCD param
     PYROSETTA_FLAGS: str = "-mute all -ignore_unrecognized_res"
