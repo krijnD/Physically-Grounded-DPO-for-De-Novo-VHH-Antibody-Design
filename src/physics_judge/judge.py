@@ -54,9 +54,11 @@ class PhysicsJudge:
         self,
         e_rep_reject: float = Config.E_REP_REJECT,
         cdr_energy_reject: float = Config.CDR_ENERGY_PER_RES_REJECT,
+        refinement_mode: str = "pack_cdrs",
     ):
         self.e_rep_reject = e_rep_reject
         self.cdr_energy_reject = cdr_energy_reject
+        self.refinement_mode = refinement_mode
 
     def evaluate(
         self,
@@ -109,6 +111,7 @@ class PhysicsJudge:
                 complex_pdb_path=complex_pdb_path,
                 nanobody_chain_id=nanobody_chain_id,
                 interface=interface,
+                refinement_mode=self.refinement_mode,
             )
         except Exception:
             logger.error(
