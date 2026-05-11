@@ -190,6 +190,103 @@ def repack_complex(pose) -> tuple[float, float]:
     return pre_score, post_score
 
 
+def pack_cdr_shell(
+    pose,
+    nanobody_chain_id: str,
+    cdr_ranges: list[tuple[int, int]] = Config.VHH_CDR_RANGES,
+) -> tuple[float, float]:
+    """Side-chain repack restricted to CDR residues + ±2 framework shell.
+
+    Cheaper than :func:`repack_complex` (~10–30s vs ~30–90s) and more
+    faithful for the per-residue CDR energy metric:
+
+      - **Backbone is not moved**, so when scoring DiffAb-generated
+        structures we evaluate what the model produced rather than a
+        Rosetta-refined version of it (no FastRelax-induced confounding).
+      - **Antigen side chains are not repacked**, preserving experimental
+        rotamers for crystal complexes and the original-antigen anchor
+        in AAPR pairs.
+      - **CDR + ±2 framework shell** rotamers are reassigned to the
+        Rosetta library, which is required for ``residue_total_energy``
+        to be in interpretable units.
+
+    Sufficient for the per-residue CDR energy metric, which is local
+    (residue-residue interactions within ~6 Å pairwise cutoff) and so
+    is unaffected by distant un-packed framework or antigen side chains.
+
+    Falls back to :func:`repack_complex` if the CDR ranges cannot be
+    located in the pose (numbering mismatch).
+
+    Args:
+        pose: PyRosetta Pose (modified in place).
+        nanobody_chain_id: Chain letter of the nanobody (e.g. ``"H"``).
+        cdr_ranges: Kabat-numbered CDR boundaries.
+
+    Returns:
+        Tuple of (pre_score, post_score) total ref2015 energies.
+    """
+    import pyrosetta
+    from pyrosetta.rosetta.core.pack.task import TaskFactory
+    from pyrosetta.rosetta.core.pack.task.operation import (
+        InitializeFromCommandline,
+        OperateOnResidueSubset,
+        PreventRepackingRLT,
+        RestrictToRepacking,
+    )
+    from pyrosetta.rosetta.core.select.residue_selector import (
+        NotResidueSelector,
+        ResidueIndexSelector,
+    )
+    from pyrosetta.rosetta.protocols.minimization_packing import PackRotamersMover
+
+    sfxn = pyrosetta.create_score_function("ref2015")
+    pre_score = sfxn(pose)
+
+    # Map Kabat CDR ranges to Pose residue indices using the existing helper
+    loop_ranges = _find_pose_loop_residues(pose, nanobody_chain_id, cdr_ranges)
+    if not loop_ranges:
+        logger.warning(
+            "No CDR loops identified for chain %s — falling back to "
+            "full-complex repack.",
+            nanobody_chain_id,
+        )
+        return repack_complex(pose)
+
+    # CDR + ±2 framework shell, in Pose-internal residue indices.
+    repack_indices: set[int] = set()
+    for start, end in loop_ranges:
+        lo = max(1, start - 2)
+        hi = min(pose.total_residue(), end + 2)
+        for i in range(lo, hi + 1):
+            repack_indices.add(i)
+
+    indices_str = ",".join(str(i) for i in sorted(repack_indices))
+    repack_selector = ResidueIndexSelector(indices_str)
+    no_repack_selector = NotResidueSelector(repack_selector)
+
+    # TaskFactory: restrict to repacking everywhere (no design), then
+    # explicitly prevent repacking outside the CDR-shell selector.
+    tf = TaskFactory()
+    tf.push_back(InitializeFromCommandline())
+    tf.push_back(RestrictToRepacking())
+    tf.push_back(OperateOnResidueSubset(PreventRepackingRLT(), no_repack_selector))
+
+    task = tf.create_task_and_apply_taskoperations(pose)
+    packer = PackRotamersMover(sfxn, task)
+    packer.apply(pose)
+
+    post_score = sfxn(pose)
+    logger.info(
+        "CDR-shell repack (%d residues): total score %.2f → %.2f REU "
+        "(delta %+.2f)",
+        len(repack_indices),
+        pre_score,
+        post_score,
+        post_score - pre_score,
+    )
+    return pre_score, post_score
+
+
 def refine_cdr_loops(
     pose,
     nanobody_chain_id: str,
@@ -435,6 +532,7 @@ def score_complex(
     nanobody_chain_id: str = "H",
     interface: str = Config.ROSETTA_INTERFACE,
     cdr_ranges: list[tuple[int, int]] = Config.VHH_CDR_RANGES,
+    refinement_mode: str = "pack_cdrs",
     ccd_outer_cycles: int = Config.CCD_OUTER_CYCLES,
     ccd_max_inner_cycles: int = Config.CCD_MAX_INNER_CYCLES,
     e_rep_fast_fail: float = Config.E_REP_REJECT,
@@ -443,13 +541,20 @@ def score_complex(
 
     Pipeline:
       1. Load PDB → Pose
-      2. Full-complex side-chain repack (resolve framework/antigen clashes
-         from raw crystal PDBs — essential to avoid million-REU blowups)
-      3. FastRelax CDR loops (resolve residual CDR-local clashes)
-      4. Compute E_Rep (fast)
-      5. If E_Rep ≤ threshold → compute CDR per-residue energy (expensive)
+      2. Refinement (per ``refinement_mode``):
+           - ``"pack_cdrs"`` (default): CDR + ±2 shell side-chain repack
+             only (~10–30s). Recommended for both calibration on GT
+             crystals and AAPR on model outputs — backbone is preserved
+             so the metric is faithful to the input structure.
+           - ``"full"``: Full-complex side-chain repack + FastRelax on
+             CDR loops (~5–6 min). Only useful for paranoid runs on
+             ill-prepared crystal PDBs; FastRelax distorts the CDR
+             backbone away from the input, which is undesirable for
+             AAPR evaluation.
+      3. Compute E_Rep (fast)
+      4. If E_Rep ≤ threshold → compute CDR per-residue energy
          If E_Rep > threshold → skip CDR energy (fast-fail)
-      6. If |CDR_energy| exceeds CDR_ENERGY_PATHOLOGICAL → flag
+      5. If |CDR_energy| exceeds CDR_ENERGY_PATHOLOGICAL → flag
          scoring_failed (prevents non-physical blowups from being
          labeled "weak binder")
 
@@ -458,49 +563,71 @@ def score_complex(
         nanobody_chain_id: Chain letter of the nanobody.
         interface: PyRosetta interface string (e.g. ``"H_A"``) — used
                    only for the E_Rep selector, not for CDR energy.
-        cdr_ranges: Kabat-numbered CDR boundaries for CCD refinement
-                    AND for the CDR energy summation.
-        ccd_outer_cycles: CCD outer cycles (AbDPO default: 1).
-        ccd_max_inner_cycles: CCD inner cycles (AbDPO default: 10).
+        cdr_ranges: Kabat-numbered CDR boundaries for refinement AND for
+                    the CDR energy summation.
+        refinement_mode: ``"pack_cdrs"`` (default) or ``"full"``.
+                         See pipeline step 2 above.
+        ccd_outer_cycles: CCD outer cycles (full mode only; AbDPO default: 1).
+        ccd_max_inner_cycles: CCD inner cycles (full mode only; AbDPO default: 10).
         e_rep_fast_fail: E_Rep threshold for skipping CDR energy.
 
     Returns:
         :class:`PhysicsScores` with ``e_rep`` always populated and
         ``cdr_energy_per_res`` populated only if E_Rep passes the
         fast-fail gate.
+
+    Raises:
+        ValueError: if ``refinement_mode`` is not one of the supported
+            values.
     """
+    if refinement_mode not in ("pack_cdrs", "full"):
+        raise ValueError(
+            f"Unknown refinement_mode={refinement_mode!r}; "
+            "must be one of: 'pack_cdrs', 'full'."
+        )
     _ensure_init()
 
     pose = load_complex_pose(complex_pdb_path)
 
-    # Full-complex side-chain repack — relieves framework/antigen clashes
-    # in raw crystal PDBs. Without this, unrelaxed clashes outside the
-    # CDR ±2 shell produce non-physical million-REU fa_rep blowups in
-    # E_complex that dominate delta_G. Skip gracefully on failure.
-    try:
-        repack_complex(pose)
-    except Exception:
-        logger.warning(
-            "Full-complex repack failed for %s — scoring without full repack.",
-            complex_pdb_path,
-            exc_info=True,
-        )
+    # Refinement — dispatch on requested mode. All branches catch
+    # exceptions to avoid losing the candidate to a Rosetta hiccup;
+    # the downstream scoring still runs on whatever pose state we have.
+    if refinement_mode == "pack_cdrs":
+        try:
+            pack_cdr_shell(pose, nanobody_chain_id, cdr_ranges=cdr_ranges)
+        except Exception:
+            logger.warning(
+                "CDR-shell repack failed for %s — scoring without refinement.",
+                complex_pdb_path,
+                exc_info=True,
+            )
+    else:  # refinement_mode == "full"
+        # Full-complex side-chain repack — relieves framework/antigen
+        # clashes in raw crystal PDBs.  Skip gracefully on failure.
+        try:
+            repack_complex(pose)
+        except Exception:
+            logger.warning(
+                "Full-complex repack failed for %s — scoring without full repack.",
+                complex_pdb_path,
+                exc_info=True,
+            )
 
-    # CCD refinement — skip gracefully on failure
-    try:
-        refine_cdr_loops(
-            pose,
-            nanobody_chain_id,
-            cdr_ranges=cdr_ranges,
-            outer_cycles=ccd_outer_cycles,
-            max_inner_cycles=ccd_max_inner_cycles,
-        )
-    except Exception:
-        logger.warning(
-            "CCD refinement failed for %s — scoring without refinement.",
-            complex_pdb_path,
-            exc_info=True,
-        )
+        # CDR FastRelax — skip gracefully on failure
+        try:
+            refine_cdr_loops(
+                pose,
+                nanobody_chain_id,
+                cdr_ranges=cdr_ranges,
+                outer_cycles=ccd_outer_cycles,
+                max_inner_cycles=ccd_max_inner_cycles,
+            )
+        except Exception:
+            logger.warning(
+                "CDR FastRelax failed for %s — scoring without refinement.",
+                complex_pdb_path,
+                exc_info=True,
+            )
 
     # Step 1: E_Rep (cheap — fast-fail gate)
     e_rep = compute_e_rep(pose, interface)
