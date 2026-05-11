@@ -586,6 +586,117 @@ def _resolve_antigen_pose_indices(
     return out
 
 
+def _break_cdr_disulfides(pose, cdr_pose_idxs: list[int]) -> bool:
+    """Break disulfide bonds in ``pose`` where one (or both) ends fall in CDRs.
+
+    Required because ``replace_pose_residue_copying_existing_coordinates``
+    leaves the conformation's chemical-bond record intact when swapping a
+    disulfide CYS to GLY — the next ``ref2015`` call then aborts on
+    ``DisulfideAtomIndices.cc`` with "a disulfide is shown to be
+    atomically connected, but the residue type is not a disulfide".
+    Camelid VHHs commonly carry a second intra-CDR or CDR–framework
+    disulfide (e.g. C96 inside the H3 range), so this is a real case on
+    ANDD inputs, not an edge case.
+
+    Strategy:
+      1. Enumerate disulfide-state CYS pairs within the CDR set
+         (matched by ``SG``–``SG`` distance < 2.5 Å).
+      2. Call ``core.conformation.break_disulfide`` — this both removes
+         the chemical bond AND strips the ``DISULFIDE`` variant from
+         both residues.
+      3. If the C++ entry point is unavailable in this PyRosetta build,
+         fall back to manually removing the ``DISULFIDE`` variant; this
+         is sufficient because the subsequent Gly substitution destroys
+         the SG atom that the chemical-bond record references.
+
+    Mutates ``pose`` in place. Returns ``True`` on success (including no
+    disulfides to break), ``False`` if a bond touching the CDR cannot be
+    broken — caller treats that as a candidate-level failure.
+    """
+    import pyrosetta
+    from pyrosetta.rosetta.core.chemical import VariantType
+
+    # Identify disulfide pairs touching the CDR
+    pairs: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for i in cdr_pose_idxs:
+        res_i = pose.residue(i)
+        if res_i.name3() != "CYS" or not res_i.has_variant_type(
+            VariantType.DISULFIDE
+        ):
+            continue
+        try:
+            sg_i = res_i.xyz("SG")
+        except Exception:
+            continue
+        for j in range(1, pose.total_residue() + 1):
+            if j == i:
+                continue
+            key = (min(i, j), max(i, j))
+            if key in seen:
+                continue
+            res_j = pose.residue(j)
+            if res_j.name3() != "CYS" or not res_j.has_variant_type(
+                VariantType.DISULFIDE
+            ):
+                continue
+            try:
+                if (sg_i - res_j.xyz("SG")).norm() < 2.5:
+                    pairs.append(key)
+                    seen.add(key)
+                    break
+            except Exception:
+                continue
+
+    if not pairs:
+        return True
+
+    break_fn = getattr(
+        pyrosetta.rosetta.core.conformation, "break_disulfide", None,
+    )
+
+    for lo, hi in pairs:
+        broken = False
+        if break_fn is not None:
+            try:
+                break_fn(pose.conformation(), lo, hi)
+                broken = True
+            except Exception:
+                logger.debug(
+                    "break_disulfide(conf, %d, %d) raised — "
+                    "falling back to variant strip.",
+                    lo, hi,
+                )
+        if not broken:
+            try:
+                from pyrosetta.rosetta.core.pose import (
+                    remove_variant_type_from_pose_residue,
+                )
+
+                remove_variant_type_from_pose_residue(
+                    pose, VariantType.DISULFIDE, lo,
+                )
+                remove_variant_type_from_pose_residue(
+                    pose, VariantType.DISULFIDE, hi,
+                )
+                broken = True
+            except Exception:
+                logger.warning(
+                    "Could not break disulfide %d-%d — "
+                    "sub-residue scoring will fail for this candidate.",
+                    lo, hi,
+                    exc_info=True,
+                )
+                return False
+
+        logger.info(
+            "Broke CDR-touching disulfide %d-%d before Gly substitution.",
+            lo, hi,
+        )
+
+    return True
+
+
 def _make_gly_replacement_pose(pose, cdr_pose_idxs: list[int]):
     """Return a copy of ``pose`` with every CDR residue replaced by Glycine.
 
@@ -598,11 +709,14 @@ def _make_gly_replacement_pose(pose, cdr_pose_idxs: list[int]):
     Implementation: uses ``replace_pose_residue_copying_existing_coordinates``
     which preserves the existing N, CA, C, O, H, HA atoms by identity-
     matching atom names, so the backbone geometry is bit-identical to
-    the input.
+    the input. Before substitution, any CDR-touching disulfide bonds
+    are broken via :func:`_break_cdr_disulfides` so that the destination
+    Gly residue does not retain stale ``SG`` chemical-bond records.
 
     Returns:
         A new Pose with Gly substitutions applied at each CDR position.
-        Returns None if any substitution fails (e.g. terminal cap issue).
+        Returns None if any substitution fails (e.g. terminal cap issue,
+        unbreakable disulfide).
     """
     import pyrosetta
     from pyrosetta.rosetta.core.chemical import ChemicalManager
@@ -618,6 +732,13 @@ def _make_gly_replacement_pose(pose, cdr_pose_idxs: list[int]):
         return None
 
     pose_bb = pose.clone()
+
+    # Strip CDR-touching disulfides before any Gly substitution — otherwise
+    # the SG-SG chemical-bond record survives the residue swap and ref2015
+    # asserts on the resulting Gly-with-disulfide-connectivity state.
+    if not _break_cdr_disulfides(pose_bb, cdr_pose_idxs):
+        return None
+
     for pose_idx in cdr_pose_idxs:
         try:
             replace_pose_residue_copying_existing_coordinates(
