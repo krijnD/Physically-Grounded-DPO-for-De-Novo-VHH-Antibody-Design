@@ -63,6 +63,21 @@ class PhysicsScores:
     # cdr_energy_per_res is nulled out and the judge emits
     # "skipped_scoring_failure" rather than "fail_cdr_energy".
     scoring_failed: bool = False
+    # AbDPO Appendix B sub-residue side-chain decomposition
+    # (mean REU/residue across CDR residues; ref2015).  Reserved as
+    # forward-looking signal for the DPO loss / PCGrad ablation — not
+    # used by the AAPR rejection gates.  All three are None when the
+    # E_Rep fast-fail tripped or when the antigen could not be mapped.
+    #
+    #   cdr_e_total_sidechain      — Eq. 10 sub-residue form
+    #                                ES_total(A_j^sc), mean over CDR
+    #   cdr_ag_e_nonrep_sidechain  — Eq. 11 mean over CDR
+    #                                (CDR side-chain ↔ Ag attractive)
+    #   cdr_ag_e_rep_sidechain     — Eq. 12 mean over CDR
+    #                                (CDR side-chain ↔ Ag repulsive)
+    cdr_e_total_sidechain: Optional[float] = None
+    cdr_ag_e_nonrep_sidechain: Optional[float] = None
+    cdr_ag_e_rep_sidechain: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +540,256 @@ def compute_cdr_energy_per_res(
 
 
 # ---------------------------------------------------------------------------
+# AbDPO Appendix B sub-residue side-chain decomposition
+# ---------------------------------------------------------------------------
+def _resolve_cdr_pose_indices(
+    pose,
+    nanobody_chain_id: str,
+    cdr_ranges: list[tuple[int, int]],
+) -> list[int]:
+    """Flat list of Pose-internal indices for every CDR residue.
+
+    Returns empty list if no CDR residue can be located (numbering mismatch).
+    """
+    pdb_info = pose.pdb_info()
+    if pdb_info is None:
+        return []
+
+    out: list[int] = []
+    for kabat_start, kabat_end in cdr_ranges:
+        for kabat_res in range(kabat_start, kabat_end + 1):
+            pose_idx = pdb_info.pdb2pose(nanobody_chain_id, kabat_res)
+            if pose_idx != 0:
+                out.append(pose_idx)
+    return out
+
+
+def _resolve_antigen_pose_indices(
+    pose,
+    nanobody_chain_id: str,
+) -> list[int]:
+    """Pose-internal indices of every residue NOT on the nanobody chain.
+
+    The Physics Judge does not need to know which chain letters are
+    antigen — anything that is not the nanobody is treated as antigen
+    for the CDR–Ag pair-energy sum (matches AbDPO Appendix B which sums
+    over ``i ∈ [g+1, g+n]`` covering all antigen residues).
+    """
+    pdb_info = pose.pdb_info()
+    if pdb_info is None:
+        return []
+
+    out: list[int] = []
+    for i in range(1, pose.total_residue() + 1):
+        if pdb_info.chain(i) != nanobody_chain_id:
+            out.append(i)
+    return out
+
+
+def _make_gly_replacement_pose(pose, cdr_pose_idxs: list[int]):
+    """Return a copy of ``pose`` with every CDR residue replaced by Glycine.
+
+    Glycine has no non-backbone heavy atoms, so substituting each CDR
+    residue with Gly (preserving backbone coordinates) cleanly isolates
+    the side-chain contribution: subtracting the Gly-substituted pose
+    energy from the original yields the per-residue and per-residue-pair
+    side-chain contributions used in AbDPO Appendix B Eqs. 10–12.
+
+    Implementation: uses ``replace_pose_residue_copying_existing_coordinates``
+    which preserves the existing N, CA, C, O, H, HA atoms by identity-
+    matching atom names, so the backbone geometry is bit-identical to
+    the input.
+
+    Returns:
+        A new Pose with Gly substitutions applied at each CDR position.
+        Returns None if any substitution fails (e.g. terminal cap issue).
+    """
+    import pyrosetta
+    from pyrosetta.rosetta.core.chemical import ChemicalManager
+    from pyrosetta.rosetta.core.pose import (
+        replace_pose_residue_copying_existing_coordinates,
+    )
+
+    rts = ChemicalManager.get_instance().residue_type_set("fa_standard")
+    try:
+        gly_type = rts.name_map("GLY")
+    except Exception:
+        logger.warning("Could not resolve GLY residue type from fa_standard set.")
+        return None
+
+    pose_bb = pose.clone()
+    for pose_idx in cdr_pose_idxs:
+        try:
+            replace_pose_residue_copying_existing_coordinates(
+                pose_bb, pose_idx, gly_type,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to substitute Gly at pose residue %d — cannot "
+                "compute sub-residue energies.",
+                pose_idx,
+                exc_info=True,
+            )
+            return None
+
+    return pose_bb
+
+
+def compute_cdr_sidechain_energies(
+    pose,
+    nanobody_chain_id: str = "H",
+    cdr_ranges: list[tuple[int, int]] = Config.VHH_CDR_RANGES,
+) -> Optional[tuple[float, float, float]]:
+    """Compute AbDPO Appendix B sub-residue side-chain energies.
+
+    Returns three scalars (REU/residue, averaged over CDR residues for
+    scope-invariance — same normalization as
+    :func:`compute_cdr_energy_per_res`):
+
+      1. ``cdr_e_total_sidechain``       — Eq. 10 sub-residue form,
+                                            mean ES_total(A_j^sc)
+      2. ``cdr_ag_e_nonrep_sidechain``   — Eq. 11 mean over CDR,
+                                            sum of attractive (fa_atr,
+                                            fa_sol, fa_elec, hbond,
+                                            lk_ball) for CDR side-chain
+                                            ↔ antigen pairs
+      3. ``cdr_ag_e_rep_sidechain``      — Eq. 12 mean over CDR,
+                                            fa_rep for CDR side-chain
+                                            ↔ antigen pairs
+
+    **Implementation: two-pose differencing.** Score the original pose
+    with ref2015; build a Gly-substituted copy (each CDR residue replaced
+    by Glycine, backbone preserved); score that copy with ref2015. Since
+    Glycine has no side-chain heavy atoms, the difference at any
+    energy-graph location is exactly the CDR side-chain contribution:
+
+        E_sc(j)        = E_full(j)     − E_bb(j)
+        E_sc(j, ag)    = E_full(j, ag) − E_bb(j, ag)
+
+    where ``E_bb`` is evaluated on the Gly-substituted pose. The
+    energy-graph subtraction yields per-residue-pair contributions that
+    can be decomposed by ScoreType.
+
+    **Relationship to AbDPO's exact form.**
+
+    AbDPO Eq. 11 sums attractive energies over atom-pair types
+    ``(A_j^sc, A_i^sc)`` and ``(A_j^sc, A_i^bb)``; Eq. 12 sums repulsive
+    energies over all four atom-pair types with 2× weighting on those
+    involving the CDR backbone (``A_j^bb``). Implementing exact atom-pair
+    masking requires ``EnergyMethod``-level access (Etable.atom_pair_energy,
+    HBondSet directionality) — substantially more PyRosetta plumbing.
+
+    The Gly-substitution variant implemented here computes the
+    *side-chain contribution of the CDR residue* exactly (since Gly has
+    no side-chain atoms), but does *not* distinguish between antigen
+    side-chain and antigen backbone atoms on the partner side — the
+    antigen side is fully unchanged across both poses, so its bb/sc
+    contributions are aggregated. This is consistent with how AbDPO
+    actually computes Eq. 11 (the (sc, sc) + (sc, bb) sum covers all
+    antigen-atom types) and is a deliberate simplification of Eq. 12's
+    2× backbone weighting (the weighting was specific to AbDPO's
+    energy-weighted loss and does not generalize to binary DPO).
+
+    Args:
+        pose: PyRosetta Pose of the complex (assumed already refined
+              consistent with ``score_complex``).  Will be cloned;
+              input pose is not modified.
+        nanobody_chain_id: Chain letter of the nanobody (e.g. ``"H"``).
+        cdr_ranges: Kabat-numbered CDR boundaries.
+
+    Returns:
+        ``(cdr_e_total_sidechain, cdr_ag_e_nonrep_sidechain,
+        cdr_ag_e_rep_sidechain)`` as a tuple of mean REU/residue values,
+        or ``None`` if CDR residues / antigen residues cannot be located
+        or Gly substitution fails on any CDR position.
+    """
+    import pyrosetta
+    from pyrosetta.rosetta.core.scoring import ScoreType
+
+    sfxn = pyrosetta.create_score_function("ref2015")
+
+    cdr_idxs = _resolve_cdr_pose_indices(pose, nanobody_chain_id, cdr_ranges)
+    if not cdr_idxs:
+        logger.warning(
+            "No CDR residues found for chain %s — cannot compute "
+            "sub-residue energies.",
+            nanobody_chain_id,
+        )
+        return None
+
+    ag_idxs = _resolve_antigen_pose_indices(pose, nanobody_chain_id)
+    if not ag_idxs:
+        logger.warning(
+            "No antigen residues found (every residue is on chain %s) — "
+            "cannot compute CDR–Ag sub-residue energies.",
+            nanobody_chain_id,
+        )
+        return None
+
+    # Score the original (full) pose
+    sfxn(pose)
+    e_full = pose.energies()
+
+    # Build and score the Gly-substituted (backbone-only) pose
+    pose_bb = _make_gly_replacement_pose(pose, cdr_idxs)
+    if pose_bb is None:
+        return None
+    sfxn(pose_bb)
+    e_bb = pose_bb.energies()
+
+    # ── (1) CDR side-chain total energy: per-residue diff ──
+    e_total_sc_sum = 0.0
+    for j in cdr_idxs:
+        e_total_sc_sum += (
+            e_full.residue_total_energy(j) - e_bb.residue_total_energy(j)
+        )
+
+    # ── (2,3) CDR–Ag side-chain interaction energies: pair-energy diff ──
+    # Decompose by ScoreType. NONREP_TYPES are the AbDPO Eq. 11 attractive
+    # set (hbond, fa_atr, fa_sol, fa_elec, lk_ball); fa_rep is Eq. 12.
+    nonrep_types = (
+        ScoreType.fa_atr,
+        ScoreType.fa_sol,
+        ScoreType.fa_elec,
+        ScoreType.lk_ball_wtd,
+        ScoreType.hbond_sc,
+        ScoreType.hbond_bb_sc,
+    )
+
+    graph_full = e_full.energy_graph()
+    graph_bb = e_bb.energy_graph()
+
+    e_nonrep_sc_sum = 0.0
+    e_rep_sc_sum = 0.0
+    for j in cdr_idxs:
+        for i in ag_idxs:
+            edge_full = graph_full.find_energy_edge(j, i)
+            edge_bb = graph_bb.find_energy_edge(j, i)
+            for st in nonrep_types:
+                v_full = edge_full[st] if edge_full is not None else 0.0
+                v_bb = edge_bb[st] if edge_bb is not None else 0.0
+                e_nonrep_sc_sum += (v_full - v_bb)
+            v_full_rep = (
+                edge_full[ScoreType.fa_rep] if edge_full is not None else 0.0
+            )
+            v_bb_rep = edge_bb[ScoreType.fa_rep] if edge_bb is not None else 0.0
+            e_rep_sc_sum += (v_full_rep - v_bb_rep)
+
+    n_cdr = len(cdr_idxs)
+    e_total_sc_mean = e_total_sc_sum / n_cdr
+    e_nonrep_sc_mean = e_nonrep_sc_sum / n_cdr
+    e_rep_sc_mean = e_rep_sc_sum / n_cdr
+
+    logger.info(
+        "Sub-residue (AbDPO App. B): E_total_sc=%.3f, E_nonRep_sc=%.3f, "
+        "E_Rep_sc=%.3f REU/residue (mean over %d CDR residues, %d antigen residues)",
+        e_total_sc_mean, e_nonrep_sc_mean, e_rep_sc_mean, n_cdr, len(ag_idxs),
+    )
+
+    return (e_total_sc_mean, e_nonrep_sc_mean, e_rep_sc_mean)
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
 def score_complex(
@@ -662,4 +927,34 @@ def score_complex(
             e_rep=e_rep, cdr_energy_per_res=None, scoring_failed=True,
         )
 
-    return PhysicsScores(e_rep=e_rep, cdr_energy_per_res=cdr_energy)
+    # Step 3: sub-residue side-chain decomposition (AbDPO Appendix B).
+    # Reuses the same refined Pose — no additional refinement cost.
+    # Signal-only (does not gate the verdict); a failure to compute
+    # leaves the three fields as None on the result, mirroring the
+    # CDR-energy fast-fail behaviour.
+    sidechain_values: Optional[tuple[float, float, float]] = None
+    try:
+        sidechain_values = compute_cdr_sidechain_energies(
+            pose,
+            nanobody_chain_id=nanobody_chain_id,
+            cdr_ranges=cdr_ranges,
+        )
+    except Exception:
+        logger.warning(
+            "Sub-residue side-chain energy computation failed for %s — "
+            "leaving sidechain fields as None on this candidate.",
+            complex_pdb_path,
+            exc_info=True,
+        )
+
+    if sidechain_values is None:
+        return PhysicsScores(e_rep=e_rep, cdr_energy_per_res=cdr_energy)
+
+    e_total_sc, e_nonrep_sc, e_rep_sc = sidechain_values
+    return PhysicsScores(
+        e_rep=e_rep,
+        cdr_energy_per_res=cdr_energy,
+        cdr_e_total_sidechain=e_total_sc,
+        cdr_ag_e_nonrep_sidechain=e_nonrep_sc,
+        cdr_ag_e_rep_sidechain=e_rep_sc,
+    )
