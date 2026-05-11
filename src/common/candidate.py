@@ -52,6 +52,17 @@ class NanobodyCandidate:
     e_rep: Optional[float] = None
     physics_verdict: Optional[str] = None
 
+    # --- Physics Judge: AbDPO Appendix B sub-residue side-chain decomp ---
+    # Forward-looking DPO preference signal (not used by AAPR gates).
+    # Mean REU/residue across CDR residues; computed by two-pose
+    # differencing against a Gly-substituted backbone-only copy. See
+    # `compute_cdr_sidechain_energies` for the exact form and the
+    # relationship to AbDPO Eqs. 10–12. None if the Gly substitution
+    # failed or if the E_Rep fast-fail short-circuited Physics scoring.
+    cdr_e_total_sidechain: Optional[float] = None
+    cdr_ag_e_nonrep_sidechain: Optional[float] = None
+    cdr_ag_e_rep_sidechain: Optional[float] = None
+
     def fail_candidate(self, reason: str) -> None:
         """Transition the candidate to a terminal failure state."""
         self.is_valid = False
@@ -85,4 +96,8 @@ class NanobodyCandidate:
             "cdr_energy_per_res": self.cdr_energy_per_res,
             "e_rep": self.e_rep,
             "physics_verdict": self.physics_verdict,
+            # Physics: sub-residue side-chain decomp (AbDPO App. B)
+            "cdr_e_total_sidechain": self.cdr_e_total_sidechain,
+            "cdr_ag_e_nonrep_sidechain": self.cdr_ag_e_nonrep_sidechain,
+            "cdr_ag_e_rep_sidechain": self.cdr_ag_e_rep_sidechain,
         }
