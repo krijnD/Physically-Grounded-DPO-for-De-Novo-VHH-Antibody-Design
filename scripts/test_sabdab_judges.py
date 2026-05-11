@@ -137,6 +137,16 @@ def main():
         default=1,
         help="Number of CPU cores for TNP folding (default: 1)",
     )
+    parser.add_argument(
+        "--refinement-mode",
+        choices=["pack_cdrs", "full"],
+        default="pack_cdrs",
+        help="Physics Judge structure prep mode. 'pack_cdrs' (default, "
+             "~10–30s/entry) repacks CDR + ±2 framework shell side chains. "
+             "'full' (~5–6 min/entry) does full-complex repack + FastRelax "
+             "on CDR loops. Use 'full' only for paranoid runs on raw "
+             "crystal PDBs where you suspect framework clashes.",
+    )
     args = parser.parse_args()
 
     # Load entries — three modes: SAbDab TSV, ANDD CSV, or plain PDB directory
@@ -165,7 +175,8 @@ def main():
     # Initialize judges
     biology_judge = BiologyJudge()
     biophysics_judge = BiophysicsJudge()
-    physics_judge = PhysicsJudge()
+    physics_judge = PhysicsJudge(refinement_mode=args.refinement_mode)
+    logger.info("Physics refinement mode: %s", args.refinement_mode)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
