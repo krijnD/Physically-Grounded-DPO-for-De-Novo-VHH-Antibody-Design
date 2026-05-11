@@ -126,6 +126,12 @@ class PhysicsJudge:
         # Populate metrics on the candidate
         candidate.e_rep = scores.e_rep
         candidate.cdr_energy_per_res = scores.cdr_energy_per_res
+        # Sub-residue side-chain decomposition (AbDPO App. B) — signal-only,
+        # does not influence verdict. Fields are None when the E_Rep
+        # fast-fail short-circuited scoring or Gly substitution failed.
+        candidate.cdr_e_total_sidechain = scores.cdr_e_total_sidechain
+        candidate.cdr_ag_e_nonrep_sidechain = scores.cdr_ag_e_nonrep_sidechain
+        candidate.cdr_ag_e_rep_sidechain = scores.cdr_ag_e_rep_sidechain
 
         # ── Scoring-failure gate: non-physical CDR energy ──
         # The scorer sets this flag when |E_cdr| exceeds the pathological
