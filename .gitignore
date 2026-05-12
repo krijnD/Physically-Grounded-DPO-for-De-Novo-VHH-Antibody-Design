@@ -1,0 +1,29 @@
+/third_party
+
+# ── ML artifacts (industry-standard exclusions) ──────────────────────
+# Weights, optimizer state, and EMA shadows. Never commit these — they
+# live on the cluster scratch disk (see configs/diffab_ft/vhh_ft.yml's
+# init_checkpoint comment for the canonical location on Snellius).
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Per-run outputs.
+/runs/
+/logs/
+
+# DiffAb's LMDB cache + MMseqs2 intermediates.
+/data/processed/
+/data/datasets/clustering/cluster_tmp/
+/data/datasets/clustering/antigen_tmp/
+
+# W&B local cache.
+/wandb/
+**/wandb/
+
+# Python bytecode / venv.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
