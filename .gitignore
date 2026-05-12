@@ -12,6 +12,7 @@
 # Per-run outputs.
 /runs/
 /logs/
+/data/results/
 
 # DiffAb's LMDB cache + MMseqs2 intermediates.
 /data/processed/
