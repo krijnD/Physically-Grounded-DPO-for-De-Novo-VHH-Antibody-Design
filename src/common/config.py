@@ -64,11 +64,30 @@ class Config:
     # Zhou et al. NeurIPS 2024 §3.2: ε(R⁰) = Σⱼ ε(R⁰[j]) summed over CDR
     # residues, here additionally divided by N_CDR_residues for scope-
     # invariance (works under CDR-H3-only or multi-CDR π_ref scope).
-    # AbDPO reports natural-antibody CDR-H3 sum ≈ -1.83 REU on ~10
-    # residues → ~-0.18 REU/residue. Threshold rejects entries with
-    # mean > -0.2 REU/residue as non-binders ("Rocks").
-    CDR_ENERGY_PER_RES_REJECT: float = -0.2  # REU/residue
-    E_REP_REJECT: float = 5.0                # > 5.0 REU → steric clash
+    #
+    # ── CALIBRATION PASS (current) ──
+    # Both thresholds are set to a large sentinel value so the Physics
+    # Judge fast-fail short-circuit in `rosetta_scorer.score_complex()` is
+    # disabled and every non-crashing GT row is fully scored (residue-
+    # level + sub-residue side-chain energies populated for all rows).
+    # This lets the AAPR/calibration parquet carry the complete empirical
+    # distribution of all Physics scalars over the curated ANDD GT set,
+    # so percentile-based thresholds can be derived post-hoc following
+    # AbDPO Appendix E.1 (Zhou et al. NeurIPS 2024, Table 4) — they
+    # report success rates at the 50/55/.../95th percentiles of the real
+    # antibody training-set distribution and pick the 80th as the
+    # headline cutoff. Same convention applies here on natural VHHs.
+    #
+    # Replace with empirically-derived percentile values after the
+    # `andd_calibration_full.parquet` and `andd_calibration_pack.parquet`
+    # arms are merged and analysed. Previous (literature-derived,
+    # superseded) values: CDR_ENERGY_PER_RES_REJECT = -0.2,
+    # E_REP_REJECT = 5.0. Those rejected ~40% of the natural ANDD
+    # distribution because they were imported from AbDPO's paired-
+    # antibody CDR-H3-only paper without re-calibration for VHH scope
+    # and a different scoring regime.
+    CDR_ENERGY_PER_RES_REJECT: float = 1.0e9  # REU/residue — calibration sentinel
+    E_REP_REJECT: float = 1.0e9               # REU — calibration sentinel
     # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
