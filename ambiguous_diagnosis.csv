@@ -1,0 +1,108 @@
+pdb_id,csv_letter,n_candidates,substring_unique,identity_unique,rescue_possible,best_match_chain,best_identity
+7B5G,"B, D, F, H",4,False,False,False,B,1.0
+7F5G,"B, D",2,True,False,True,B,0.06
+7FAU,,2,False,False,False,B,0.048
+7LPN,,3,False,False,False,H,1.0
+7NBB,"D, H",2,False,False,False,H,0.093
+7NLL,"A, C",2,True,True,True,A,1.0
+7NS6,"G, H, O, S, T, U",6,False,False,False,G,1.0
+7NVL,"N, n",2,False,False,False,N,0.163
+7NVN,"N, n",2,False,False,False,n,0.083
+7OM5,"A, B",2,False,False,False,A,1.0
+7PAF,"B, C",2,False,False,False,B,0.384
+7PH3,"C, D",2,False,False,False,C,1.0
+7PH4,"C, D",2,False,False,False,C,1.0
+7QBE,"E, F",2,False,False,False,E,0.073
+7QBG,"E, G",2,False,False,False,E,0.08
+7R1Z,,2,True,True,True,E,1.0
+7R23,,2,False,False,False,C,0.118
+7R4Q,"D, E",2,False,False,False,D,1.0
+7R63,"A, B, C, D",4,False,False,False,A,1.0
+7S2S,"A, C",2,False,False,False,A,0.079
+7SAJ,"B, D, F, H, J",5,False,False,False,B,0.056
+7SSZ,"E, F, G, H",4,False,False,False,E,1.0
+7T5F,,2,False,False,False,C,0.078
+7T84,"A, B, C, D, E, F, G, H",8,False,False,False,F,0.094
+7TJC,,2,False,False,False,A,0.073
+7TPR,"D, E",5,False,False,False,D,1.0
+7UBY,"C, D",2,False,False,False,C,0.081
+7UNY,"B, C",2,False,True,True,C,1.0
+7UNZ,"A, C",2,False,False,False,C,1.0
+7VPY,"A, B",2,False,False,False,A,0.069
+7VQ0,"D, E, F",3,False,False,False,D,0.069
+7WD2,"C, D",2,True,True,True,C,1.0
+7WHI,,4,True,True,True,G,1.0
+7WHJ,,3,True,True,True,F,1.0
+7WHK,,5,False,False,False,D,1.0
+7WPE,"U, X",2,False,False,False,Z,1.0
+7WPF,"R, U, X",3,False,False,False,T,1.0
+7XL1,"A, B",2,True,True,True,B,1.0
+7XOD,"R, U, X",3,False,False,False,Z,1.0
+7YUD,H,2,True,False,True,N,0.083
+7YUF,H,2,True,False,True,N,0.083
+7YZI,"C, D, E",3,False,False,False,C,1.0
+7YZK,"C, D",2,False,False,False,C,1.0
+7Z1A,"B, D",4,False,False,False,F,1.0
+7Z1B,"B, D",4,False,False,False,F,1.0
+7Z1C,"B, D",4,False,True,True,E,1.0
+7Z1X,,4,False,False,False,C,0.297
+7Z6V,"X, Y, Z",3,False,False,False,X,1.0
+7Z7X,"D, E, F",3,False,False,False,F,1.0
+7Z85,"D, E, F",3,False,False,False,F,0.072
+7Z86,"X, Y, Z",3,False,False,False,X,0.079
+7Z9Q,"D, E, F",3,False,False,False,D,1.0
+7Z9R,"X, Y, Z",3,False,False,False,Y,0.079
+7ZG0,"G, H",2,False,False,False,H,0.097
+7ZML,,4,False,False,False,K,1.0
+7ZMM,,4,False,False,False,K,1.0
+7ZQT,"B, F",2,False,False,False,B,0.073
+8A67,"D, H",2,False,False,False,D,0.075
+8AFH,"A, B, E, F, G, H, K, L, O, P, Q, R",8,False,False,False,D,0.072
+8AFM,"A, B, E, F, G, H, K, L",4,False,False,False,D,0.072
+8AHL,"A, B, C, D, G, H, I, J",4,False,False,False,L,0.076
+8AIA,"A, B, G, H, K, L, M, N",3,False,False,False,D,0.072
+8AIX,"A, B, E, F, G, H, K, L, M, N, Q, R, U, V, W, X",6,False,False,False,D,0.072
+8AJB,"A, B, C, D, G, H, I, J, M, N, O, P, S, T, U, V",8,False,False,False,L,0.076
+8B41,"G, H, I, J",4,False,False,False,G,1.0
+8BF4,,4,True,False,True,A,0.15
+8C9X,"F, G, H, I, J",5,False,False,False,F,1.0
+8CAU,"F, G, H, I, J",5,False,False,False,F,0.091
+8CI2,"F, G, I",3,False,False,False,F,0.091
+8CY6,"D, E, F",3,False,False,False,D,0.042
+8DFL,"E, F, G, H",4,False,False,False,E,1.0
+8DQU,"A, B",2,False,True,True,B,1.0
+8DTN,"A, C, E, G",4,False,False,False,A,0.333
+8E2N,"A, B",2,False,False,False,B,0.071
+8EE2,"C, D, G, H, K, L",5,False,False,False,H,1.0
+8ELN,"C, D, G, H, K, L",6,False,False,False,H,0.076
+8EQB,"A, D, G, J",4,False,False,False,A,0.108
+8EYG,"E, F",2,False,False,False,E,1.0
+8F6U,"A, B",2,False,False,False,B,0.089
+8F6V,"A, B",2,False,False,False,B,0.066
+8FIF,"A, B, C",3,False,False,False,A,0.092
+8FTT,"A, B, C, D",4,False,False,False,A,1.0
+8FXS,"D, E",2,False,False,False,E,0.072
+8G0W,"C, D, G, H",4,False,False,False,C,1.0
+8GHR,"A, B",2,False,False,False,C,0.089
+8GZ6,"A, B",2,True,True,True,B,1.0
+8HXR,"A, B",2,False,False,False,B,1.0
+8IIU,"A, B",2,False,False,False,B,0.089
+8IRW,"A, B",2,False,True,True,B,1.0
+8K45,"D, E",2,False,False,False,D,0.065
+8K46,"E, G, I",3,False,False,False,E,0.065
+8OMZ,,2,False,False,False,D,0.088
+8OUD,"D, E, F",3,False,False,False,D,1.0
+8P7W,"D, F",4,False,False,False,D,0.144
+8P8A,"D, F",3,True,True,True,Z,1.0
+8P8J,"D, F",3,True,True,True,Z,1.0
+8PNL,,2,False,False,False,B,0.396
+8PNU,"D, E, F, J, K, L",6,False,False,False,J,0.086
+8PNV,"D, E, F, J, K, L",6,False,False,False,D,0.086
+8Q7S,"B, E, H, K, N",5,False,False,False,F,0.591
+8QF3,"A, E",2,False,False,False,E,0.071
+8QF5,"A, G",2,False,False,False,A,0.077
+8R80,"A, H",2,False,False,False,N,1.0
+8T58,"C, F",2,True,False,True,A,0.096
+8T5C,"E, H",2,False,False,False,H,0.209
+8TW3,,2,False,False,False,Z,0.235
+8WO4,"G, H",2,False,False,False,G,0.067

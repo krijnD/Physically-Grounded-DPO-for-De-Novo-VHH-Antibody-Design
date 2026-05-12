@@ -1,0 +1,466 @@
+pdb	Hchain	Lchain	antigen_chain	antigen_type	antigen_name	date	resolution	method	scfv
+7b2m	D		B	protein		11/27/20	3.39	ELECTRON MICROSCOPY	False
+7b2p	D		B	protein		11/27/20	3.43	ELECTRON MICROSCOPY	False
+7b2q	D		C	protein		11/27/20	3.76	ELECTRON MICROSCOPY	False
+7b5g	B		A | E	protein | protein		12/03/20	2.40	X-RAY DIFFRACTION	False
+7dv4	B		A	protein		01/12/21	2.38	X-RAY DIFFRACTION	False
+7ept	N		A | B	protein | protein		04/27/21	3.00	ELECTRON MICROSCOPY	False
+7f0t	E		A | B	protein | protein		06/07/21	3.10	ELECTRON MICROSCOPY	False
+7f1o	E		A | B	protein | protein		06/09/21	3.13	ELECTRON MICROSCOPY	False
+7f23	E		A | B	protein | protein		06/10/21	3.58	ELECTRON MICROSCOPY	False
+7f5g	B		A	protein		06/22/21	1.75	X-RAY DIFFRACTION	False
+7f5h	C		A	protein		06/22/21	3.00	X-RAY DIFFRACTION	False
+7fim	N		A | B	protein | protein		07/31/21	3.40	ELECTRON MICROSCOPY	False
+7fin	N		A | B	protein | protein		07/31/21	3.10	ELECTRON MICROSCOPY	False
+7fiy	N		A | B	protein | protein		08/01/21	3.40	ELECTRON MICROSCOPY	False
+7lll	N		A | B	protein | protein		02/04/21	3.70	ELECTRON MICROSCOPY	False
+7lly	N		A | B	protein | protein		02/04/21	3.30	ELECTRON MICROSCOPY	False
+7n9v	J		I	protein		06/18/21	3.45	X-RAY DIFFRACTION	False
+7nbb	D		A | B | C | E	protein | protein | protein | protein		01/26/21	1.55	X-RAY DIFFRACTION	False
+7ndf	C		B	protein		02/01/21	2.10	X-RAY DIFFRACTION	False
+7nll	A		B | D	protein | protein		02/22/21	2.89	ELECTRON MICROSCOPY	False
+7noz	R		D	protein		02/26/21	3.90	X-RAY DIFFRACTION	False
+7ns6	G		L | M	protein | protein		03/05/21	3.18	ELECTRON MICROSCOPY	False
+7nvl	N		E	protein		03/15/21	2.50	ELECTRON MICROSCOPY	False
+7nvm	N		E	protein		03/15/21	3.10	ELECTRON MICROSCOPY	False
+7nvn	N		E	protein		03/15/21	3.00	ELECTRON MICROSCOPY	False
+7nxx	B		A	protein		03/19/21	2.19	X-RAY DIFFRACTION	False
+7ocy	C		A	protein		04/28/21	4.25	ELECTRON MICROSCOPY	False
+7om4	B		A	protein		05/21/21	6.05	X-RAY DIFFRACTION	False
+7p2d	C		A	protein		07/05/21	3.20	X-RAY DIFFRACTION	False
+7pa5	B		A	protein		07/29/21	3.18	X-RAY DIFFRACTION	False
+7paf	B		D	protein		07/29/21	3.75	ELECTRON MICROSCOPY	False
+7ph2	D		A	protein		08/16/21	3.70	ELECTRON MICROSCOPY	False
+7ph3	C		B	protein		08/16/21	2.80	ELECTRON MICROSCOPY	False
+7ph4	C		B	protein		08/16/21	2.80	ELECTRON MICROSCOPY	False
+7ph7	D		A	protein		08/16/21	4.10	ELECTRON MICROSCOPY	False
+7pqg	B		A	protein		09/21/21	3.70	ELECTRON MICROSCOPY	False
+7pqq	B		A	protein		09/18/21	3.30	ELECTRON MICROSCOPY	False
+7q3q	B		A	protein		10/28/21	2.30	X-RAY DIFFRACTION	False
+7q3r	G		A	protein		10/28/21	1.92	X-RAY DIFFRACTION	False
+7q6c	K		L	protein		11/06/21	2.29	X-RAY DIFFRACTION	False
+7q6z	B		A	protein		11/09/21	3.59	ELECTRON MICROSCOPY	False
+7qbd	E		B	protein		11/19/21	4.18	X-RAY DIFFRACTION	False
+7qbe	E		A | D	protein | protein		11/19/21	3.00	X-RAY DIFFRACTION	False
+7qbf	B		A	protein		11/19/21	1.85	X-RAY DIFFRACTION	False
+7qbg	E		B | C	protein | protein		11/19/21	2.69	X-RAY DIFFRACTION	False
+7qia	C		A	protein		12/14/21	3.50	ELECTRON MICROSCOPY	False
+7qic	C		A	protein		12/14/21	4.10	ELECTRON MICROSCOPY	False
+7qiv	C		B	protein		12/16/21	2.80	X-RAY DIFFRACTION	False
+7qji	C		A	protein		12/16/21	4.10	X-RAY DIFFRACTION	False
+7qjj	C		A	protein		12/16/21	4.60	X-RAY DIFFRACTION	False
+7qn5	F		B | C	protein | protein		12/20/21	2.50	ELECTRON MICROSCOPY	False
+7qn6	K		A | B	protein | protein		12/20/21	2.90	ELECTRON MICROSCOPY	False
+7qn7	F		B | C	protein | protein		12/20/21	3.00	ELECTRON MICROSCOPY	False
+7qn8	K		A | B	protein | protein		12/20/21	3.10	ELECTRON MICROSCOPY	False
+7qn9	L		B | C	protein | protein		12/20/21	2.90	ELECTRON MICROSCOPY	False
+7qna	N		D | E	protein | protein		12/20/21	3.00	ELECTRON MICROSCOPY	False
+7qnb	N		D | E	protein | protein		12/20/21	3.10	ELECTRON MICROSCOPY	False
+7qnc	F		B | C	protein | protein		12/20/21	2.90	ELECTRON MICROSCOPY	False
+7qnd	K		A | B	protein | protein		12/20/21	3.40	ELECTRON MICROSCOPY	False
+7qne	G		A | E	protein | protein		12/20/21	2.70	ELECTRON MICROSCOPY	False
+7r24	C		A	protein		02/04/22	2.70	X-RAY DIFFRACTION	False
+7r4i	D		A	protein		02/08/22	3.20	ELECTRON MICROSCOPY	False
+7r4q	D		A	protein		02/09/22	3.60	ELECTRON MICROSCOPY	False
+7r4r	D		C	protein		02/09/22	3.90	ELECTRON MICROSCOPY	False
+7r73	A		G	protein		06/24/21	1.76	X-RAY DIFFRACTION	False
+7r74	B		C	protein		06/24/21	2.76	X-RAY DIFFRACTION	False
+7ra3	N		A | B	protein | protein		06/29/21	3.24	ELECTRON MICROSCOPY	False
+7rby	B		A	protein		07/06/21	2.82	X-RAY DIFFRACTION	False
+7rg9	N		A | B	protein | protein		07/14/21	3.20	ELECTRON MICROSCOPY	False
+7rgp	N		A | B	protein | protein		07/15/21	2.90	ELECTRON MICROSCOPY	False
+7ri1	B		A	protein		07/19/21	2.55	X-RAY DIFFRACTION	False
+7ri2	B		A	protein		07/19/21	2.80	X-RAY DIFFRACTION	False
+7s1m	N		A | B	protein | protein		09/02/21	2.41	ELECTRON MICROSCOPY	False
+7s2r	B		A	protein		09/03/21	2.49	X-RAY DIFFRACTION	False
+7s2s	C		B	protein		09/03/21	1.93	X-RAY DIFFRACTION	False
+7s3i	N		A | B	protein | protein		09/07/21	2.51	ELECTRON MICROSCOPY	False
+7s7r	B		A	protein		09/17/21	1.77	X-RAY DIFFRACTION	False
+7sai	C		A	protein		09/22/21	2.23	X-RAY DIFFRACTION	False
+7saj	B		A	protein		09/22/21	2.37	X-RAY DIFFRACTION	False
+7sk5	K		E	protein		10/19/21	4.00	ELECTRON MICROSCOPY	False
+7sk7	K		C	protein		10/19/21	3.30	ELECTRON MICROSCOPY	False
+7sp6	B		A	protein		11/02/21	3.10	ELECTRON MICROSCOPY	False
+7sp7	B		A	protein		11/02/21	3.10	ELECTRON MICROSCOPY	False
+7sp8	B		A	protein		11/02/21	2.70	ELECTRON MICROSCOPY	False
+7sp9	B		A	protein		11/02/21	2.90	ELECTRON MICROSCOPY	False
+7spa	B		A	protein		11/02/21	2.80	ELECTRON MICROSCOPY	False
+7ssz	E		A | B	protein | protein		11/11/21	3.25	ELECTRON MICROSCOPY	False
+7t9i	N		X | Y	protein | protein		12/19/21	2.90	ELECTRON MICROSCOPY	False
+7t9n	N		X | Y	protein | protein		12/19/21	2.90	ELECTRON MICROSCOPY	False
+7tmw	N		B | R	protein | protein		01/20/22	3.20	ELECTRON MICROSCOPY	False
+7tpr	D		B	protein		01/25/22	2.39	ELECTRON MICROSCOPY	False
+7tuy	K		L	protein		02/03/22	2.98	ELECTRON MICROSCOPY	False
+7tyf	N		A | B	protein | protein		02/13/22	2.20	ELECTRON MICROSCOPY	False
+7tyh	N		A | B	protein | protein		02/13/22	3.30	ELECTRON MICROSCOPY	False
+7tyi	N		A | B	protein | protein		02/13/22	3.30	ELECTRON MICROSCOPY	False
+7tyl	N		A | B	protein | protein		02/13/22	3.30	ELECTRON MICROSCOPY	False
+7tyn	N		A | B	protein | protein		02/13/22	2.60	ELECTRON MICROSCOPY	False
+7tyo	N		A | B	protein | protein		02/14/22	2.70	ELECTRON MICROSCOPY	False
+7tyw	N		A | B	protein | protein		02/14/22	3.00	ELECTRON MICROSCOPY	False
+7tyx	N		A | B	protein | protein		02/14/22	2.55	ELECTRON MICROSCOPY	False
+7tyy	N		A | B	protein | protein		02/14/22	3.00	ELECTRON MICROSCOPY	False
+7tzf	N		A | B	protein | protein		02/15/22	2.40	ELECTRON MICROSCOPY	False
+7ubx	D		A	protein		03/15/22	1.81	X-RAY DIFFRACTION	False
+7uby	D		B	protein		03/15/22	2.10	X-RAY DIFFRACTION	False
+7uia	E		D	protein		03/28/22	2.59	X-RAY DIFFRACTION	False
+7uie	E		F	protein		03/29/22	3.23	X-RAY DIFFRACTION	False
+7ul3	C		A | H | L	protein | protein | protein		04/03/22	3.00	ELECTRON MICROSCOPY	False
+7uny	B		D	protein		04/12/22	4.13	X-RAY DIFFRACTION	False
+7unz	C		B	protein		04/12/22	2.03	X-RAY DIFFRACTION	False
+7upm	B		A	protein		04/15/22	2.70	X-RAY DIFFRACTION	False
+7ust	B		A	protein		04/25/22	1.70	X-RAY DIFFRACTION	False
+7usv	D		B	protein		04/25/22	2.10	X-RAY DIFFRACTION	False
+7utz	N		X | Y	protein | protein		04/28/22	2.40	ELECTRON MICROSCOPY	False
+7v35	N		A | B	protein | protein		08/10/21	3.40	ELECTRON MICROSCOPY	False
+7v9l	N		A | B	protein | protein		08/26/21	2.60	ELECTRON MICROSCOPY	False
+7vab	N		A | B	protein | protein		08/28/21	3.20	ELECTRON MICROSCOPY	False
+7vbh	N		A | B	protein | protein		08/31/21	3.00	ELECTRON MICROSCOPY	False
+7vbi	N		A | B	protein | protein		08/31/21	3.00	ELECTRON MICROSCOPY	False
+7vfa	D		E	protein		09/11/21	1.75	X-RAY DIFFRACTION	False
+7vfb	B		A	protein		09/11/21	2.00	X-RAY DIFFRACTION	False
+7vke	B		A	protein		09/29/21	1.90	X-RAY DIFFRACTION	False
+7voa	A		B	protein		10/13/21	1.80	X-RAY DIFFRACTION	False
+7vq0	D		A | B	protein | protein		10/18/21	3.03	ELECTRON MICROSCOPY	False
+7vqx	N		A | B	protein | protein		10/21/21	2.74	ELECTRON MICROSCOPY	False
+7vuh	N		A | B	protein | protein		11/02/21	3.22	ELECTRON MICROSCOPY	False
+7vui	N		A | B	protein | protein		11/02/21	3.30	ELECTRON MICROSCOPY	False
+7vuj	N		A | B	protein | protein		11/02/21	3.80	ELECTRON MICROSCOPY	False
+7vvj	N		A | B	protein | protein		11/06/21	3.20	ELECTRON MICROSCOPY	False
+7vvk	N		A | B	protein | protein		11/06/21	3.30	ELECTRON MICROSCOPY	False
+7vvl	N		A | B	protein | protein		11/06/21	2.80	ELECTRON MICROSCOPY	False
+7vvm	N		A | B	protein | protein		11/06/21	3.20	ELECTRON MICROSCOPY	False
+7vvn	N		A | B	protein | protein		11/06/21	3.80	ELECTRON MICROSCOPY	False
+7vvo	N		A | B	protein | protein		11/06/21	4.10	ELECTRON MICROSCOPY	False
+7w1s	B		A	protein		11/20/21	2.00	X-RAY DIFFRACTION	False
+7wbj	N		A | B	protein | protein		12/16/21	3.42	ELECTRON MICROSCOPY	False
+7wcm	N		A | B	protein | protein		12/20/21	2.33	ELECTRON MICROSCOPY	False
+7wcn	N		A | B	protein | protein		12/20/21	2.87	ELECTRON MICROSCOPY	False
+7wd2	C		A	protein		12/20/21	2.69	X-RAY DIFFRACTION	False
+7wki	B		A	protein		01/10/22	2.60	X-RAY DIFFRACTION	False
+7wn0	B		A	protein		01/17/22	3.64	ELECTRON MICROSCOPY	False
+7wn1	C		A	protein		01/17/22	3.11	ELECTRON MICROSCOPY	False
+7wpd	Z		Y	protein		01/23/22	3.18	ELECTRON MICROSCOPY	False
+7wq4	N		A | B	protein | protein		01/24/22	2.60	ELECTRON MICROSCOPY	False
+7wu2	N		A | B	protein | protein		02/05/22	2.80	ELECTRON MICROSCOPY	False
+7wu3	N		A | B	protein | protein		02/05/22	3.10	ELECTRON MICROSCOPY	False
+7wui	N		A | B	protein | protein		02/08/22	3.10	ELECTRON MICROSCOPY	False
+7wuq	N		A | B	protein | protein		02/09/22	2.90	ELECTRON MICROSCOPY	False
+7wxu	N		A | B	protein | protein		02/15/22	2.85	ELECTRON MICROSCOPY	False
+7wxw	D		A | B	protein | protein		02/15/22	2.84	ELECTRON MICROSCOPY	False
+7wy5	N		A | B	protein | protein		02/15/22	2.83	ELECTRON MICROSCOPY	False
+7wy8	D		A | B	protein | protein		02/15/22	2.83	ELECTRON MICROSCOPY	False
+7x2c	E		A | B	protein | protein		02/25/22	3.20	ELECTRON MICROSCOPY	False
+7x2d	E		A | B	protein | protein		02/25/22	3.30	ELECTRON MICROSCOPY	False
+7x2f	E		A | B	protein | protein		02/25/22	3.00	ELECTRON MICROSCOPY	False
+7x2l	B		E	protein		02/25/22	2.40	X-RAY DIFFRACTION	False
+7x4i	E		A | B | D	protein | protein | protein		03/02/22	3.38	X-RAY DIFFRACTION	False
+7x8r	N		A | B	protein | protein		03/14/22	2.61	ELECTRON MICROSCOPY	False
+7x8s	N		A | B	protein | protein		03/14/22	3.09	ELECTRON MICROSCOPY	False
+7xjh	N		A | B	protein | protein		04/18/22	3.30	ELECTRON MICROSCOPY	False
+7xji	N		A | B	protein | protein		04/18/22	3.90	ELECTRON MICROSCOPY	False
+7xkd	N		A | B	protein | protein		04/19/22	2.40	ELECTRON MICROSCOPY	False
+7xke	N		A | B	protein | protein		04/19/22	2.90	ELECTRON MICROSCOPY	False
+7xkf	N		A | B	protein | protein		04/19/22	2.40	ELECTRON MICROSCOPY	False
+7xld	B		A	protein		04/21/22	1.65	X-RAY DIFFRACTION	False
+7xli	B		A	protein		04/21/22	1.70	X-RAY DIFFRACTION	False
+7xou	N		A | B	protein | protein		05/01/22	3.20	ELECTRON MICROSCOPY	False
+7xov	N		A | B	protein | protein		05/01/22	3.00	ELECTRON MICROSCOPY	False
+7xp4	N		A | B	protein | protein		05/03/22	3.01	ELECTRON MICROSCOPY	False
+7xp5	N		A | B	protein | protein		05/03/22	3.08	ELECTRON MICROSCOPY	False
+7xp6	N		A | B	protein | protein		05/03/22	3.01	ELECTRON MICROSCOPY	False
+7xqv	B		A	protein		05/09/22	2.76	X-RAY DIFFRACTION	False
+7xrp	B		F	protein		05/11/22	3.88	ELECTRON MICROSCOPY	False
+7xt8	N		A | B	protein | protein		05/16/22	3.10	ELECTRON MICROSCOPY	False
+7xtb	N		A | B	protein | protein		05/16/22	3.30	ELECTRON MICROSCOPY	False
+7xtc	N		A | B	protein | protein		05/16/22	3.20	ELECTRON MICROSCOPY	False
+7xtq	N		A | B	protein | protein		05/17/22	3.20	ELECTRON MICROSCOPY	False
+7xv3	N		A | B	protein | protein		05/20/22	2.76	ELECTRON MICROSCOPY	False
+7xw5	N		A | B	protein | protein		05/26/22	2.96	ELECTRON MICROSCOPY	False
+7xw6	Y		L | R	protein | protein		05/26/22	2.78	ELECTRON MICROSCOPY	False
+7xz5	N		A | B	protein | protein		06/02/22	3.10	ELECTRON MICROSCOPY	False
+7xz6	N		A | B	protein | protein		06/02/22	2.80	ELECTRON MICROSCOPY	False
+7y0n	C		B | L	protein | protein		06/05/22	3.80	ELECTRON MICROSCOPY	False
+7y0o	H		A | L	protein | protein		06/05/22	4.40	ELECTRON MICROSCOPY	False
+7y35	N		A | B	protein | protein		06/09/22	2.90	ELECTRON MICROSCOPY	False
+7y36	N		A | B	protein | protein		06/10/22	2.80	ELECTRON MICROSCOPY	False
+7y3g	N		A | B	protein | protein		06/10/22	2.77	ELECTRON MICROSCOPY	False
+7y9t	D		B	protein		06/26/22	3.10	ELECTRON MICROSCOPY	False
+7y9u	C		A	protein		06/26/22	3.30	ELECTRON MICROSCOPY	False
+7y9v	C		A	protein		06/26/22	3.20	ELECTRON MICROSCOPY	False
+7yag	C		A	protein		06/28/22	3.10	ELECTRON MICROSCOPY	False
+7yah	C		A	protein		06/28/22	3.12	ELECTRON MICROSCOPY	False
+7yai	C		A	protein		06/28/22	3.14	ELECTRON MICROSCOPY	False
+7yaj	C		A	protein		06/28/22	3.16	ELECTRON MICROSCOPY	False
+7yit	D		A	protein		07/18/22	3.30	X-RAY DIFFRACTION	False
+7ym8	D		A	protein		07/27/22	2.92	ELECTRON MICROSCOPY	False
+7yz9	B		A	protein		02/19/22	1.97	X-RAY DIFFRACTION	False
+7yzi	C		B	protein		02/20/22	3.83	ELECTRON MICROSCOPY	False
+7yzk	C		B	protein		02/20/22	3.57	ELECTRON MICROSCOPY	False
+7z1a	B		A | C	protein | protein		02/24/22	2.59	X-RAY DIFFRACTION	False
+7z1b	B		A | C	protein | protein		02/24/22	2.30	X-RAY DIFFRACTION	False
+7z1c	B		A | C	protein | protein		02/24/22	1.90	X-RAY DIFFRACTION	False
+7z6v	X		A	protein		03/14/22	3.10	ELECTRON MICROSCOPY	False
+7z7x	F		C	protein		03/16/22	3.30	ELECTRON MICROSCOPY	False
+7z85	F		C	protein		03/16/22	3.10	ELECTRON MICROSCOPY	False
+7z86	X		A	protein		03/16/22	3.40	ELECTRON MICROSCOPY	False
+7z9q	D		C	protein		03/21/22	3.60	ELECTRON MICROSCOPY	False
+7z9r	Y		B	protein		03/21/22	4.20	ELECTRON MICROSCOPY	False
+7zau	B		A | E	protein | protein		03/22/22	2.20	X-RAY DIFFRACTION	False
+7zf4	F		E	protein		04/01/22	4.18	X-RAY DIFFRACTION	False
+7zfb	N		F	protein		04/01/22	3.08	X-RAY DIFFRACTION	False
+7zfc	M		E	protein		04/01/22	3.24	X-RAY DIFFRACTION	False
+7zfe	Z		E	protein		04/01/22	3.25	X-RAY DIFFRACTION	False
+7zg0	G		C | D | F	protein | protein | protein		04/01/22	3.18	X-RAY DIFFRACTION	False
+7zk1	B		A	protein		04/12/22	2.65	X-RAY DIFFRACTION	False
+7zkw	C		A	protein		04/13/22	3.37	X-RAY DIFFRACTION	False
+7zkz	B		A	protein		04/13/22	2.33	X-RAY DIFFRACTION	False
+7zlg	K		L	protein		04/15/22	2.72	ELECTRON MICROSCOPY	False
+7zlh	K		L	protein		04/15/22	2.75	ELECTRON MICROSCOPY	False
+7zli	K		L	protein		04/15/22	2.99	ELECTRON MICROSCOPY	False
+7zlj	K		L	protein		04/15/22	3.63	ELECTRON MICROSCOPY	False
+7zmn	K		B	protein		04/19/22	3.20	X-RAY DIFFRACTION	False
+7zmo	K		A	protein		04/19/22	3.75	X-RAY DIFFRACTION	False
+7zmp	K		B	protein		04/19/22	3.63	X-RAY DIFFRACTION	False
+7zmq	K		A	protein		04/19/22	2.70	X-RAY DIFFRACTION	False
+7zmr	K		A	protein		04/19/22	3.30	X-RAY DIFFRACTION	False
+7zms	K		A	protein		04/19/22	2.70	X-RAY DIFFRACTION	False
+7zmt	K		B	protein		04/19/22	2.30	X-RAY DIFFRACTION	False
+7zmv	K		C	protein		04/19/22	2.00	X-RAY DIFFRACTION	False
+7zqt	B		A	protein		05/03/22	2.70	X-RAY DIFFRACTION	False
+7zw1	C		B	protein		05/17/22	3.70	ELECTRON MICROSCOPY	False
+7zxu	A		E	protein		05/23/22	1.89	X-RAY DIFFRACTION	False
+7zyi	K		L	protein		05/24/22	2.88	ELECTRON MICROSCOPY	False
+8a67	D		A | B | C	protein | protein | protein		06/16/22	1.86	X-RAY DIFFRACTION	False
+8acf	K		L	protein		07/05/22	1.80	X-RAY DIFFRACTION	False
+8aci	K		L	protein		07/05/22	1.85	X-RAY DIFFRACTION	False
+8aok	B		A	protein		08/08/22	1.60	X-RAY DIFFRACTION	False
+8aom	V		A	protein		08/08/22	2.20	X-RAY DIFFRACTION	False
+8apy	C		A	protein		08/10/22	2.34	X-RAY DIFFRACTION	False
+8b17	B		A	protein		09/09/22	2.50	X-RAY DIFFRACTION	False
+8b18	B		A	protein		09/09/22	2.30	X-RAY DIFFRACTION	False
+8b19	B		A	protein		09/09/22	2.45	X-RAY DIFFRACTION	False
+8b1a	B		A	protein		09/09/22	2.15	X-RAY DIFFRACTION	False
+8b1b	B		A	protein		09/09/22	2.80	X-RAY DIFFRACTION	False
+8b1c	B		A	protein		09/09/22	2.56	X-RAY DIFFRACTION	False
+8b1d	B		A	protein		09/09/22	2.30	X-RAY DIFFRACTION	False
+8b1e	B		A	protein		09/09/22	2.47	X-RAY DIFFRACTION	False
+8b1f	B		A	protein		09/09/22	2.35	X-RAY DIFFRACTION	False
+8b1g	B		A	protein		09/09/22	2.50	X-RAY DIFFRACTION	False
+8b1h	B		A	protein		09/09/22	2.60	X-RAY DIFFRACTION	False
+8b1i	B		A	protein		09/09/22	2.55	X-RAY DIFFRACTION	False
+8b1j	B		A	protein		09/09/22	2.67	X-RAY DIFFRACTION	False
+8b1k	B		A	protein		09/09/22	2.80	X-RAY DIFFRACTION	False
+8b41	G		A	protein		09/19/22	3.80	ELECTRON MICROSCOPY	False
+8b7w	H		C	protein		10/03/22	2.85	X-RAY DIFFRACTION	False
+8b8i	A		I	protein		10/04/22	2.75	X-RAY DIFFRACTION	False
+8bb7	D		B	protein		10/12/22	2.95	X-RAY DIFFRACTION	False
+8be2	N		S	protein		10/21/22	1.90	X-RAY DIFFRACTION	False
+8bev	B		A	protein		10/21/22	5.92	ELECTRON MICROSCOPY	False
+8bgg	Y		C	protein		10/27/22	6.04	ELECTRON MICROSCOPY	False
+8bh5	C		E	protein		10/29/22	2.38	X-RAY DIFFRACTION	False
+8bzy	B		A	protein		12/15/22	3.24	ELECTRON MICROSCOPY	False
+8c02	B		A	protein		12/15/22	4.09	ELECTRON MICROSCOPY	False
+8c3v	I		R	protein		12/28/22	2.74	X-RAY DIFFRACTION	False
+8c5h	N		S	protein		01/09/23	1.68	X-RAY DIFFRACTION	False
+8c8p	H		A	protein		01/20/23	4.10	ELECTRON MICROSCOPY	False
+8c9x	F		A | B	protein | protein		01/23/23	2.30	ELECTRON MICROSCOPY	False
+8cau	F		A | B	protein | protein		01/24/23	3.40	ELECTRON MICROSCOPY	False
+8cd0	C		A	protein		01/29/23	2.42	ELECTRON MICROSCOPY	False
+8ci2	F		A | B	protein | protein		02/08/23	4.40	ELECTRON MICROSCOPY	False
+8cii	C		E	protein		02/09/23	2.70	ELECTRON MICROSCOPY	False
+8cml	A		B	protein		02/20/23	3.60	ELECTRON MICROSCOPY	False
+8coe	B		C	protein		02/28/23	4.20	X-RAY DIFFRACTION	False
+8cwu	B		A	protein		05/19/22	1.71	X-RAY DIFFRACTION	False
+8cwv	B		A	protein		05/19/22	2.51	X-RAY DIFFRACTION	False
+8cxn	D		A	protein		05/22/22	2.90	ELECTRON MICROSCOPY	False
+8cxq	D		A	protein		05/22/22	2.30	ELECTRON MICROSCOPY	False
+8cxr	E		A | C	protein | protein		05/22/22	3.65	X-RAY DIFFRACTION	False
+8cy6	D		A	protein		05/23/22	3.20	ELECTRON MICROSCOPY	False
+8cy7	D		A	protein		05/23/22	2.90	ELECTRON MICROSCOPY	False
+8cy9	D		A	protein		05/23/22	2.90	ELECTRON MICROSCOPY	False
+8cya	D		C	protein		05/23/22	2.70	ELECTRON MICROSCOPY	False
+8cyb	D		A	protein		05/23/22	2.70	ELECTRON MICROSCOPY	False
+8cyc	D		A	protein		05/23/22	2.90	ELECTRON MICROSCOPY	False
+8cyd	D		B	protein		05/23/22	2.60	ELECTRON MICROSCOPY	False
+8cyj	A		R	protein		05/23/22	3.60	ELECTRON MICROSCOPY	False
+8dam	C		A	protein		06/13/22	2.00	X-RAY DIFFRACTION	False
+8dcr	N		A | B	protein | protein		06/17/22	2.60	ELECTRON MICROSCOPY	False
+8dcs	N		A | B	protein | protein		06/17/22	2.50	ELECTRON MICROSCOPY	False
+8dfl	E		A | B	protein | protein		06/22/22	3.25	ELECTRON MICROSCOPY	False
+8di5	H		C	protein		06/28/22	3.04	ELECTRON MICROSCOPY	False
+8dly	H		C	protein		07/08/22	3.00	ELECTRON MICROSCOPY	False
+8dm0	H		C	protein		07/08/22	3.21	ELECTRON MICROSCOPY	False
+8dp0	B		A	protein		07/14/22	2.96	ELECTRON MICROSCOPY	False
+8dqu	A		C	protein		07/20/22	2.45	X-RAY DIFFRACTION	False
+8dt8	H		A	protein		07/25/22	3.34	ELECTRON MICROSCOPY	False
+8dtn	A		B	protein		07/26/22	2.20	X-RAY DIFFRACTION	False
+8dtu	A		B | C	protein | protein		07/26/22	2.45	X-RAY DIFFRACTION	False
+8e0e	B		A	protein		08/09/22	2.00	X-RAY DIFFRACTION	False
+8e3x	N		A | B	protein | protein		08/17/22	2.30	ELECTRON MICROSCOPY	False
+8e3y	N		A | B	protein | protein		08/17/22	2.30	ELECTRON MICROSCOPY	False
+8e3z	N		A | B	protein | protein		08/17/22	2.70	ELECTRON MICROSCOPY	False
+8ee2	C		A | B | J	protein | protein | protein		09/06/22	2.40	X-RAY DIFFRACTION	False
+8eln	C		A | B	protein | protein		09/26/22	2.40	X-RAY DIFFRACTION	False
+8elo	B		A	protein		09/26/22	2.72	X-RAY DIFFRACTION	False
+8elp	B		A	protein		09/26/22	2.83	X-RAY DIFFRACTION	False
+8elq	B		A | H	protein | protein		09/26/22	2.21	X-RAY DIFFRACTION	False
+8emz	B		A	protein		09/28/22	1.40	X-RAY DIFFRACTION	False
+8en0	D		A	protein		09/28/22	2.99	X-RAY DIFFRACTION	False
+8en2	C		A | B	protein | protein		09/28/22	1.85	X-RAY DIFFRACTION	False
+8en3	C		A | B	protein | protein		09/28/22	2.10	X-RAY DIFFRACTION	False
+8et0	C		A	protein		10/15/22	2.15	X-RAY DIFFRACTION	False
+8evd	A		C | D | H	protein | protein | protein		10/20/22	2.00	X-RAY DIFFRACTION	False
+8ew6	V		W	protein		10/21/22	1.90	X-RAY DIFFRACTION	False
+8eyg	E		C	protein		10/27/22	3.73	ELECTRON MICROSCOPY	False
+8eyh	D		A	protein		10/27/22	3.75	ELECTRON MICROSCOPY	False
+8f0j	N		A | B	protein | protein		11/03/22	2.00	ELECTRON MICROSCOPY	False
+8f0k	N		A | B	protein | protein		11/03/22	1.90	ELECTRON MICROSCOPY	False
+8f2a	N		A | B	protein | protein		11/07/22	2.20	ELECTRON MICROSCOPY	False
+8f2b	N		A | B	protein | protein		11/07/22	2.00	ELECTRON MICROSCOPY	False
+8f4p	D		A | B	protein | protein		11/11/22	3.70	ELECTRON MICROSCOPY	False
+8f6u	B		C | D	protein | protein		11/17/22	1.70	X-RAY DIFFRACTION	False
+8f6v	A		C	protein		11/17/22	2.30	X-RAY DIFFRACTION	False
+8f76	N		X | Y	protein | protein		11/18/22	3.10	ELECTRON MICROSCOPY	False
+8fcz	C		A	protein		12/01/22	3.70	X-RAY DIFFRACTION	False
+8fd0	C		A	protein		12/01/22	3.71	X-RAY DIFFRACTION	False
+8fd1	C		A	protein		12/01/22	4.25	X-RAY DIFFRACTION	False
+8fif	A		D	protein		12/16/22	2.35	X-RAY DIFFRACTION	False
+8flq	N		A | B	protein | protein		12/22/22	2.55	ELECTRON MICROSCOPY	False
+8flr	N		A | B	protein | protein		12/22/22	2.94	ELECTRON MICROSCOPY	False
+8fls	N		A | B	protein | protein		12/22/22	3.09	ELECTRON MICROSCOPY	False
+8flt	N		A | B	protein | protein		12/22/22	3.03	ELECTRON MICROSCOPY	False
+8flu	N		A | B	protein | protein		12/22/22	2.76	ELECTRON MICROSCOPY	False
+8fu6	N		A | B	protein | protein		01/16/23	2.90	ELECTRON MICROSCOPY	False
+8fxs	D		A	protein		01/25/23	3.15	X-RAY DIFFRACTION	False
+8fxv	B		A	protein		01/25/23	2.20	X-RAY DIFFRACTION	False
+8g0i	D		A	protein		01/31/23	2.20	X-RAY DIFFRACTION	False
+8g0w	C		A	protein		02/01/23	2.87	X-RAY DIFFRACTION	False
+8g2y	N		A | B	protein | protein		02/06/23	3.44	ELECTRON MICROSCOPY	False
+8g70	E		A	protein		02/16/23	3.40	ELECTRON MICROSCOPY	False
+8gsi	F		A	protein		09/06/22	2.02	X-RAY DIFFRACTION	False
+8gw8	N		A | B	protein | protein		09/16/22	2.90	ELECTRON MICROSCOPY	False
+8gz5	B		A	protein		09/25/22	1.70	X-RAY DIFFRACTION	False
+8h3x	A		C	protein		10/09/22	1.66	X-RAY DIFFRACTION	False
+8h3y	D		A | B	protein | protein		10/09/22	2.25	X-RAY DIFFRACTION	False
+8h5t	B		A	protein		10/13/22	2.00	X-RAY DIFFRACTION	False
+8h91	C		A	protein		10/24/22	3.07	X-RAY DIFFRACTION	False
+8ha0	N		A | B	protein | protein		10/26/22	2.62	ELECTRON MICROSCOPY	False
+8haf	N		A | B	protein | protein		10/26/22	3.25	ELECTRON MICROSCOPY	False
+8hao	F		C | D	protein | protein		10/26/22	3.76	ELECTRON MICROSCOPY	False
+8hbg	E		C	protein		10/28/22	3.60	ELECTRON MICROSCOPY	False
+8hbi	E		A	protein		10/28/22	2.90	ELECTRON MICROSCOPY	False
+8hdo	N		A | B	protein | protein		11/05/22	2.87	ELECTRON MICROSCOPY	False
+8hdp	N		A | B	protein | protein		11/05/22	3.20	ELECTRON MICROSCOPY	False
+8heg	D		C	protein		11/08/22	3.20	ELECTRON MICROSCOPY	False
+8hii	N		L	protein		11/20/22	3.57	ELECTRON MICROSCOPY	False
+8hij	N		L	protein		11/20/22	3.54	ELECTRON MICROSCOPY	False
+8hik	N		L	protein		11/20/22	3.72	ELECTRON MICROSCOPY	False
+8hj0	N		A | B	protein | protein		11/22/22	3.12	ELECTRON MICROSCOPY	False
+8hj2	N		A | B	protein | protein		11/22/22	3.80	ELECTRON MICROSCOPY	False
+8hmv	N		B | C	protein | protein		12/05/22	2.91	ELECTRON MICROSCOPY	False
+8hr2	B		A	protein		12/14/22	1.94	X-RAY DIFFRACTION	False
+8hti	N		A | B	protein | protein		12/21/22	2.97	ELECTRON MICROSCOPY	False
+8hxq	A		C | D	protein | protein		01/05/23	2.40	X-RAY DIFFRACTION	False
+8hxr	B		D	protein		01/05/23	2.70	X-RAY DIFFRACTION	False
+8i2g	N		A | B	protein | protein		01/14/23	2.80	ELECTRON MICROSCOPY	False
+8ioc	N		A | B	protein | protein		03/10/23	2.86	ELECTRON MICROSCOPY	False
+8iod	N		A | B	protein | protein		03/10/23	2.59	ELECTRON MICROSCOPY	False
+8iq4	N		A | B	protein | protein		03/15/23	2.70	ELECTRON MICROSCOPY	False
+8iq6	N		A | B	protein | protein		03/15/23	3.40	ELECTRON MICROSCOPY	False
+8itf	N		A | B	protein | protein		03/22/23	3.46	ELECTRON MICROSCOPY	False
+8itl	N		A | B	protein | protein		03/22/23	3.23	ELECTRON MICROSCOPY	False
+8itm	N		A | B	protein | protein		03/22/23	3.13	ELECTRON MICROSCOPY	False
+8iuk	N		A | B	protein | protein		03/24/23	2.67	ELECTRON MICROSCOPY	False
+8ium	N		A | B	protein | protein		03/24/23	3.14	ELECTRON MICROSCOPY	False
+8iw9	N		A | B	protein | protein		03/29/23	3.08	ELECTRON MICROSCOPY	False
+8izb	N		A | B	protein | protein		04/06/23	3.06	ELECTRON MICROSCOPY	False
+8j9n	N		C | D	protein | protein		05/04/23	3.50	ELECTRON MICROSCOPY	False
+8j9o	C		D	protein		05/04/23	3.40	ELECTRON MICROSCOPY	False
+8jh7	K		L	protein		05/22/23	3.20	ELECTRON MICROSCOPY	False
+8jhc	K		L	protein		05/23/23	3.30	ELECTRON MICROSCOPY	False
+8jip	N		A | B	protein | protein		05/27/23	2.85	ELECTRON MICROSCOPY	False
+8jiq	N		A | B	protein | protein		05/27/23	3.40	ELECTRON MICROSCOPY	False
+8jir	N		A | B	protein | protein		05/27/23	2.57	ELECTRON MICROSCOPY	False
+8jis	N		A | B	protein | protein		05/27/23	2.46	ELECTRON MICROSCOPY	False
+8jit	N		A | B	protein | protein		05/27/23	2.91	ELECTRON MICROSCOPY	False
+8jiu	N		A | B	protein | protein		05/27/23	2.76	ELECTRON MICROSCOPY	False
+8jr9	N		A | B	protein | protein		06/16/23	2.57	ELECTRON MICROSCOPY	False
+8jru	B		A	protein		06/17/23	3.50	ELECTRON MICROSCOPY	False
+8jrv	B		A	protein		06/17/23	3.30	ELECTRON MICROSCOPY	False
+8jtw	B		A	protein		06/22/23	3.23	ELECTRON MICROSCOPY	False
+8jtx	B		A	protein		06/22/23	3.28	ELECTRON MICROSCOPY	False
+8jty	B		A	protein		06/22/23	3.26	ELECTRON MICROSCOPY	False
+8k3k	D		E	protein		07/16/23	2.43	X-RAY DIFFRACTION	False
+8k45	D		A | B	protein | protein		07/17/23	3.66	ELECTRON MICROSCOPY	False
+8k46	E		A	protein		07/17/23	3.37	ELECTRON MICROSCOPY	False
+8k47	I		A | C	protein | protein		07/17/23	3.54	ELECTRON MICROSCOPY	False
+8k8j	N		A | B	protein | protein		07/30/23	2.88	ELECTRON MICROSCOPY	False
+8kgk	E		B | C	protein | protein		08/19/23	3.16	ELECTRON MICROSCOPY	False
+8kh4	E		B | C	protein | protein		08/21/23	3.10	ELECTRON MICROSCOPY	False
+8kh5	E		B | C	protein | protein		08/21/23	2.83	ELECTRON MICROSCOPY	False
+8odx	K		L	protein		03/09/23	4.40	X-RAY DIFFRACTION	False
+8ont	B		A	protein		04/03/23	3.66	ELECTRON MICROSCOPY	False
+8opr	B		A	protein		04/07/23	1.81	X-RAY DIFFRACTION	False
+8oq3	C		A | D	protein | protein		04/11/23	2.90	ELECTRON MICROSCOPY	False
+8oud	D		A	protein		04/22/23	2.31	ELECTRON MICROSCOPY	False
+8oww	B		A	protein		04/28/23	1.97	X-RAY DIFFRACTION	False
+8ozb	A		F	protein		05/08/23	2.09	X-RAY DIFFRACTION	False
+8p7w	D		A | B | G	protein | protein | protein		05/31/23	3.04	ELECTRON MICROSCOPY	False
+8p88	C		A	protein		05/31/23	2.02	X-RAY DIFFRACTION	False
+8p89	C		A | B	protein | protein		05/31/23	3.19	X-RAY DIFFRACTION	False
+8p8a	D		A | B | C	protein | protein | protein		05/31/23	3.20	ELECTRON MICROSCOPY	False
+8p8j	F		A | B | E	protein | protein | protein		06/01/23	3.49	ELECTRON MICROSCOPY	False
+8pih	B		A	protein		06/21/23	1.76	X-RAY DIFFRACTION	False
+8pij	B		A	protein		06/21/23	2.90	ELECTRON MICROSCOPY	False
+8piz	B		A	protein		06/22/23	2.75	ELECTRON MICROSCOPY	False
+8pjp	C		A	protein		06/23/23	2.92	ELECTRON MICROSCOPY	False
+8pkc	C		A	protein		06/26/23	4.10	X-RAY DIFFRACTION	False
+8pm2	N		A | B	protein | protein		06/28/23	2.92	ELECTRON MICROSCOPY	False
+8pnu	J		G	protein		07/02/23	2.12	ELECTRON MICROSCOPY	False
+8pnv	D		A	protein		07/02/23	2.05	ELECTRON MICROSCOPY	False
+8pok	E		B | C	protein | protein		07/05/23	3.40	ELECTRON MICROSCOPY	False
+8pyr	D		A | C	protein | protein		07/26/23	2.15	X-RAY DIFFRACTION	False
+8q6k	N		H | L	protein | protein		08/11/23	2.10	X-RAY DIFFRACTION	False
+8q93	B		A	protein		08/19/23	3.10	X-RAY DIFFRACTION	False
+8q94	B		A	protein		08/19/23	2.50	X-RAY DIFFRACTION	False
+8q95	B		A	protein		08/19/23	1.60	X-RAY DIFFRACTION	False
+8qf4	E		A	protein		09/02/23	1.02	X-RAY DIFFRACTION	False
+8qf5	G		H	protein		09/02/23	1.50	X-RAY DIFFRACTION	False
+8qot	B		A | H | L	protein | protein | protein		09/29/23	3.20	ELECTRON MICROSCOPY	False
+8r61	C		B | D	protein | protein		11/20/23	3.10	X-RAY DIFFRACTION	False
+8rqf	K		L	protein		01/18/24	3.41	ELECTRON MICROSCOPY	False
+8sbb	B		A	protein		04/03/23	3.59	ELECTRON MICROSCOPY	False
+8smv	N		A | B	protein | protein		04/26/23	2.74	ELECTRON MICROSCOPY	False
+8snc	B		A	protein		04/27/23	3.20	ELECTRON MICROSCOPY	False
+8snd	B		A	protein		04/27/23	3.10	ELECTRON MICROSCOPY	False
+8sne	B		A	protein		04/27/23	3.00	ELECTRON MICROSCOPY	False
+8sos	D		A	protein		04/29/23	2.33	X-RAY DIFFRACTION	False
+8t5c	H		L | a	protein | protein		06/13/23	4.70	ELECTRON MICROSCOPY	False
+8t6i	A		H | L	protein | protein		06/16/23	2.55	X-RAY DIFFRACTION	False
+8t7h	C		A	protein		06/20/23	3.30	ELECTRON MICROSCOPY	False
+8t8i	A		H | L	protein | protein		06/22/23	2.52	X-RAY DIFFRACTION	False
+8t9y	A		H | L	protein | protein		06/26/23	2.52	X-RAY DIFFRACTION	False
+8tb7	N		L	protein		06/28/23	2.94	ELECTRON MICROSCOPY	False
+8tng	H		E	protein		08/01/23	3.58	ELECTRON MICROSCOPY	False
+8tnh	H		A | C	protein | protein		08/01/23	3.32	ELECTRON MICROSCOPY	False
+8u26	N		A | B	protein | protein		09/05/23	2.50	ELECTRON MICROSCOPY	False
+8u4v	K		L	protein		09/11/23	2.99	ELECTRON MICROSCOPY	False
+8uhb	N		B | C	protein | protein		10/08/23	3.35	ELECTRON MICROSCOPY	False
+8w87	N		A | B	protein | protein		09/01/23	2.80	ELECTRON MICROSCOPY	False
+8w88	N		A | B	protein | protein		09/01/23	2.60	ELECTRON MICROSCOPY	False
+8w89	N		A | B	protein | protein		09/01/23	3.00	ELECTRON MICROSCOPY	False
+8w8a	N		A | B	protein | protein		09/01/23	2.80	ELECTRON MICROSCOPY	False
+8wa3	N		A | B	protein | protein		09/06/23	2.86	ELECTRON MICROSCOPY	False
+8wc6	N		A | B	protein | protein		09/11/23	3.20	ELECTRON MICROSCOPY	False
+8wg7	N		A | B	protein | protein		09/20/23	2.54	ELECTRON MICROSCOPY	False
+8wg8	N		A | B	protein | protein		09/20/23	2.71	ELECTRON MICROSCOPY	False
+8wnp	G		A	protein		10/06/23	3.10	ELECTRON MICROSCOPY	False
+8wnu	G		A	protein		10/06/23	3.80	ELECTRON MICROSCOPY	False
+8wo4	G		A	protein		10/06/23	2.80	ELECTRON MICROSCOPY	False
+8x79	N		A | B	protein | protein		11/23/23	2.41	ELECTRON MICROSCOPY	False
+8x7a	N		A | B	protein | protein		11/23/23	2.56	ELECTRON MICROSCOPY	False
+8xgr	N		B | G	protein | protein		12/15/23	3.20	ELECTRON MICROSCOPY	False
+8xld	B		A	protein		12/25/23	2.10	X-RAY DIFFRACTION	False
+9auc	N		A | B	protein | protein		02/28/24	2.40	ELECTRON MICROSCOPY	False
+9axf	N		A | B	protein | protein		03/06/24	3.50	ELECTRON MICROSCOPY	False
