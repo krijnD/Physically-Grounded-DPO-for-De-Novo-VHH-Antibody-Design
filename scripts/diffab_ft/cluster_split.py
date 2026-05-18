@@ -50,12 +50,14 @@ Usage:
 """
 
 import argparse
+import datetime
 import json
 import logging
 import random
 import shutil
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -147,6 +149,80 @@ def parse_cluster_tsv(tsv_path: Path) -> dict[str, str]:
             rep, member = parts
             member_to_rep[member] = rep
     return member_to_rep
+
+
+# ── Deduplication ─────────────────────────────────────────────────────────
+# When the curated ANDD set contains the same nanobody crystallized in many
+# PDB entries (e.g. the CDR3 `CPAPFTRDCFDVTSTTYAY` appears in 147 of 465
+# rows, all of which would land in the train split per cluster-level
+# splitting), the model trains many times on identical sequence/structure
+# pairs and overweights that molecule. Dedup picks one representative per
+# unique sequence using a deterministic rule: best resolution → latest
+# deposition date → lex pdb_id. Mirrors the convention adopted in
+# scripts/calibration/percentile_analysis.py.
+_SAFE_DATE_MIN = datetime.datetime(1900, 1, 1)
+
+
+def _parse_resolution(value) -> float:
+    """Parse the manifest 'resolution' field. Returns +inf for 'NOT' or
+    unparseable values, so they sort last."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _parse_date(value) -> datetime.datetime:
+    """Parse the manifest 'date' field (DiffAb's MM/DD/YY format).
+    Returns 1900-01-01 sentinel for missing/unparseable values, so they
+    sort last in the 'latest date first' order."""
+    try:
+        return datetime.datetime.strptime(str(value), "%m/%d/%y")
+    except (ValueError, TypeError):
+        return _SAFE_DATE_MIN
+
+
+def select_representative(
+    entry_ids: list[str],
+    manifest_index: dict[str, tuple[float, datetime.datetime, str]],
+) -> str:
+    """Pick one entry_id from a duplicate group.
+
+    Order: best resolution (lowest numeric; 'NOT' → +inf) → latest date →
+    lex pdb_id (lowercase). Deterministic across runs.
+
+    Args:
+        entry_ids: List of ``"{pdb}_{Hchain}"`` IDs in the same dedup group.
+        manifest_index: entry_id → (resolution_float, date_dt, pdb_id_lower).
+            Pre-computed once in main() to avoid repeated DataFrame lookups.
+    """
+    if len(entry_ids) == 1:
+        return entry_ids[0]
+
+    def sort_key(eid: str):
+        res, date, pdb_id = manifest_index[eid]
+        # Lower res first; later date first (negate via timestamp); lex pdb_id
+        return (res, -date.timestamp(), pdb_id)
+
+    return min(entry_ids, key=sort_key)
+
+
+def build_manifest_index(
+    manifest: pd.DataFrame,
+) -> dict[str, tuple[float, datetime.datetime, str]]:
+    """Precompute (resolution, date, pdb_id_lower) per entry_id for fast
+    representative-selection lookups."""
+    index: dict[str, tuple[float, datetime.datetime, str]] = {}
+    for _, row in manifest.iterrows():
+        pdb_id = str(row["pdb"]).strip().lower()
+        h_chain = str(row["Hchain"]).strip()
+        eid = f"{pdb_id}_{h_chain}"
+        index[eid] = (
+            _parse_resolution(row.get("resolution")),
+            _parse_date(row.get("date")),
+            pdb_id,
+        )
+    return index
 
 
 # ── Cluster-level split ───────────────────────────────────────────────────
@@ -318,9 +394,23 @@ def main() -> None:
     parser.add_argument("--scheme", default="chothia",
                         choices=["chothia", "kabat", "imgt"],
                         help="Numbering scheme for CDR extraction (default: chothia).")
+    parser.add_argument(
+        "--dedupe-by",
+        choices=["raw_sequence", "concat_cdrs", "none"],
+        default="raw_sequence",
+        help=(
+            "Collapse manifest entries that share this key to one representative "
+            "before clustering. 'raw_sequence' uses the full VHH heavy-chain AA "
+            "from the curated CSV (default; matches the calibration convention "
+            "in docs/threshold_calibration_context.md §5). 'concat_cdrs' uses "
+            "CDR-H1+H2+H3 only (more aggressive). 'none' reproduces the pre-dedup "
+            "behavior of the broken seed42 run. Representative is chosen by "
+            "best resolution → latest date → lex pdb_id."
+        ),
+    )
     parser.add_argument("--ratios", type=float, nargs=3,
-                        default=[0.8, 0.1, 0.1], metavar=("TRAIN", "VAL", "TEST"),
-                        help="Cluster-level split ratios (default: 0.8 0.1 0.1).")
+                        default=[0.75, 0.15, 0.10], metavar=("TRAIN", "VAL", "TEST"),
+                        help="Cluster-level split ratios (default: 0.75 0.15 0.10).")
     parser.add_argument("--seed", type=int, default=42,
                         help="Seed for cluster-level shuffle (default: 42).")
     parser.add_argument("--audit-antigens", action="store_true",
@@ -364,43 +454,83 @@ def main() -> None:
             continue
         seq_lookup[(pdb_id, h_chain)] = seq
 
-    # Extract CDRs for each manifest entry, write FASTA
-    fasta_path = args.output_dir / "concat_cdrs.fasta"
-    n_written = 0
+    # ── Pass 1: extract CDRs for every manifest entry ────────────────
+    # (no FASTA write yet — we need the full extracted map to compute
+    # dedup groups before deciding which entries make it into MMseqs2.)
+    entry_to_raw_seq: dict[str, str] = {}
+    entry_to_cdr: dict[str, str] = {}
     n_no_seq = 0
     n_no_cdr = 0
-    entry_to_cdr: dict[str, str] = {}
 
-    with open(fasta_path, "w") as f:
-        for _, row in manifest.iterrows():
-            pdb_id = str(row["pdb"]).strip().lower()
-            h_chain = str(row["Hchain"]).strip()
-            entry_id = f"{pdb_id}_{h_chain}"
+    for _, row in manifest.iterrows():
+        pdb_id = str(row["pdb"]).strip().lower()
+        h_chain = str(row["Hchain"]).strip()
+        entry_id = f"{pdb_id}_{h_chain}"
 
-            seq = seq_lookup.get((pdb_id, h_chain))
-            if seq is None:
-                logger.warning("No sequence for %s in curated CSV; skipping.", entry_id)
-                n_no_seq += 1
-                continue
-            cdrs = extract_concat_cdrs(seq, scheme=args.scheme)
-            if cdrs is None:
-                logger.warning("CDR extraction failed for %s; skipping.", entry_id)
-                n_no_cdr += 1
-                continue
+        seq = seq_lookup.get((pdb_id, h_chain))
+        if seq is None:
+            logger.warning("No sequence for %s in curated CSV; skipping.", entry_id)
+            n_no_seq += 1
+            continue
+        cdrs = extract_concat_cdrs(seq, scheme=args.scheme)
+        if cdrs is None:
+            logger.warning("CDR extraction failed for %s; skipping.", entry_id)
+            n_no_cdr += 1
+            continue
 
-            f.write(f">{entry_id}\n{cdrs}\n")
-            entry_to_cdr[entry_id] = cdrs
-            n_written += 1
+        entry_to_raw_seq[entry_id] = seq
+        entry_to_cdr[entry_id] = cdrs
 
-    logger.info("Wrote %d concatenated CDR sequences to %s",
-                n_written, fasta_path)
+    n_extracted = len(entry_to_cdr)
+    logger.info("Extracted CDRs for %d / %d manifest entries.",
+                n_extracted, len(manifest))
     if n_no_seq:
         logger.warning("Skipped %d entries: missing sequence in curated CSV.", n_no_seq)
     if n_no_cdr:
         logger.warning("Skipped %d entries: CDR extraction failed (abnumber).", n_no_cdr)
-    if n_written == 0:
+    if n_extracted == 0:
         logger.error("No CDR sequences extracted; aborting.")
         sys.exit(1)
+
+    # ── Dedup pass: pick one representative per unique key ──────────
+    n_before_dedup = n_extracted
+    if args.dedupe_by == "none":
+        kept_entry_ids = set(entry_to_cdr.keys())
+        logger.info("Dedup disabled (--dedupe-by none): keeping all %d entries.",
+                    n_before_dedup)
+    else:
+        if args.dedupe_by == "raw_sequence":
+            key_fn = lambda eid: entry_to_raw_seq[eid]
+        else:  # concat_cdrs
+            key_fn = lambda eid: entry_to_cdr[eid]
+
+        manifest_index = build_manifest_index(manifest)
+        groups: dict[str, list[str]] = defaultdict(list)
+        for eid in entry_to_cdr:
+            groups[key_fn(eid)].append(eid)
+
+        kept_entry_ids = {
+            select_representative(eids, manifest_index)
+            for eids in groups.values()
+        }
+        logger.info(
+            "Dedup by %s: %d entries → %d unique (kept reps; "
+            "largest group had %d members).",
+            args.dedupe_by,
+            n_before_dedup,
+            len(kept_entry_ids),
+            max((len(v) for v in groups.values()), default=0),
+        )
+    n_after_dedup = len(kept_entry_ids)
+
+    # ── Pass 2: write FASTA from kept entries only ──────────────────
+    fasta_path = args.output_dir / "concat_cdrs.fasta"
+    with open(fasta_path, "w") as f:
+        for entry_id in sorted(kept_entry_ids):
+            f.write(f">{entry_id}\n{entry_to_cdr[entry_id]}\n")
+    n_written = len(kept_entry_ids)
+    logger.info("Wrote %d concatenated CDR sequences to %s",
+                n_written, fasta_path)
 
     # Run MMseqs2 clustering
     out_prefix = args.output_dir / "cluster_result"
@@ -458,6 +588,9 @@ def main() -> None:
             "seed": args.seed,
             "n_members": len(member_to_rep),
             "n_clusters": n_clusters,
+            "dedupe_by": args.dedupe_by,
+            "n_entries_before_dedup": n_before_dedup,
+            "n_entries_after_dedup": n_after_dedup,
         },
         "antigen_audit": antigen_audit,
     }
