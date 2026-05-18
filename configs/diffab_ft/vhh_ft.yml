@@ -58,7 +58,7 @@ train:
 dataset:
   train:
     type: vhh_andd
-    manifest_path: data/datasets/diffab_manifest.tsv
+    manifest_path: data/datasets/diffab_manifest_clean.tsv
     pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
     processed_dir: data/processed/vhh_ft   # arm-specific LMDB
     splits_path:   data/datasets/clustering/cluster_splits.json
@@ -78,7 +78,7 @@ dataset:
 
   val:
     type: vhh_andd
-    manifest_path: data/datasets/diffab_manifest.tsv
+    manifest_path: data/datasets/diffab_manifest_clean.tsv
     pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
     processed_dir: data/processed/vhh_ft
     splits_path:   data/datasets/clustering/cluster_splits.json

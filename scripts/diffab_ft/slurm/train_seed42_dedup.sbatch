@@ -24,9 +24,15 @@
 #                                              checkpoints, log.txt).
 #
 # Wall time budget: ~12-18h on a single A100 for 20K iters with our
-# settings; 24h leaves headroom for warm-up I/O. NB: the LMDB at
-# data/processed/vhh_ft/ from the seed42 run is still valid (deduped
-# split is a strict subset) — no re-preprocessing on first iter.
+# settings; 24h leaves headroom for warm-up I/O.
+#
+# NB: the LMDB at data/processed/vhh_ft/ from the original seed42 run
+# is STALE after the PDB/CSV cleanup, because clean_manifest.py
+# patched the Hchain column for ~21 entries (their LMDB keys
+# `{pdb}_{Hchain}` no longer match). The DataLoader will silently
+# skip patched entries. Delete data/processed/vhh_ft/ before launching
+# this job so the LMDB rebuilds from the clean manifest. This adds
+# ~30 min to the first iter but is one-time.
 #
 # The broken seed42 run (runs/vhh_ft/seed42/) is intentionally left in
 # place for side-by-side comparison; do not delete until the dedup run
@@ -60,18 +66,31 @@ echo "Commit:   $(git rev-parse HEAD 2>/dev/null || echo n/a)"
 echo "Branch:   $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo n/a)"
 echo "Started:  $(date -Iseconds)"
 
-# Sanity-check that the splits are actually the deduped version. If
-# the JSON still has the old 465 members, abort — the user forgot to
-# regenerate the splits with cluster_split.py --dedupe-by raw_sequence.
+# Pre-flight: (1) clean manifest must exist (PDB/CSV consistency
+# fix), (2) splits JSON must be the deduped version regenerated from
+# the clean manifest. Either failure means the user skipped a step
+# upstream — abort before burning 12-18h of A100 time.
 python -c "
 import json, sys
+from pathlib import Path
+
+mani_clean = Path('data/datasets/diffab_manifest_clean.tsv')
+if not mani_clean.exists():
+    print(f'ERROR: clean manifest missing: {mani_clean}', file=sys.stderr)
+    print('Run scripts/diffab_ft/clean_manifest.py first.', file=sys.stderr)
+    sys.exit(1)
+import pandas as pd
+n_mani = len(pd.read_csv(mani_clean, sep='\t'))
+print(f'clean manifest: {n_mani} rows')
+
 d = json.load(open('data/datasets/clustering/cluster_splits.json'))
 n_members = d['params'].get('n_members', 0)
 dedupe_by = d['params'].get('dedupe_by', None)
 print(f'splits: n_members={n_members}, dedupe_by={dedupe_by!r}')
 if dedupe_by is None or n_members > 300:
     print('ERROR: splits look like the pre-dedup (broken seed42) version.', file=sys.stderr)
-    print('Re-run scripts/diffab_ft/cluster_split.py --dedupe-by raw_sequence first.', file=sys.stderr)
+    print('Re-run scripts/diffab_ft/cluster_split.py --dedupe-by raw_sequence', file=sys.stderr)
+    print('  --manifest-tsv data/datasets/diffab_manifest_clean.tsv', file=sys.stderr)
     sys.exit(1)
 "
 
