@@ -48,7 +48,7 @@ def main() -> int:
     )
     p.add_argument(
         "--curated-csv",
-        default="/projects/0/hpmlprjs/interns/krijn/ANDD_VHH_curated_diffab.csv",
+        default="/projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/ANDD_VHH_curated_diffab.csv",
         type=Path,
         help="Curated ANDD CSV (provides Ab/Nano H_Chain AA).",
     )
