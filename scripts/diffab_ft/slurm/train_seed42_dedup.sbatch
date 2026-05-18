@@ -27,12 +27,9 @@
 # settings; 24h leaves headroom for warm-up I/O.
 #
 # NB: the LMDB at data/processed/vhh_ft/ from the original seed42 run
-# is STALE after the PDB/CSV cleanup, because clean_manifest.py
-# patched the Hchain column for ~21 entries (their LMDB keys
-# `{pdb}_{Hchain}` no longer match). The DataLoader will silently
-# skip patched entries. Delete data/processed/vhh_ft/ before launching
-# this job so the LMDB rebuilds from the clean manifest. This adds
-# ~30 min to the first iter but is one-time.
+# is still valid (the manifest is unchanged; the deduped split is a
+# strict subset of LMDB-preprocessed entries). No re-preprocessing
+# needed on first iter.
 #
 # The broken seed42 run (runs/vhh_ft/seed42/) is intentionally left in
 # place for side-by-side comparison; do not delete until the dedup run
@@ -66,32 +63,24 @@ echo "Commit:   $(git rev-parse HEAD 2>/dev/null || echo n/a)"
 echo "Branch:   $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo n/a)"
 echo "Started:  $(date -Iseconds)"
 
-# Pre-flight: (1) clean manifest must exist (PDB/CSV consistency
-# fix), (2) splits JSON must be the deduped version regenerated from
-# the clean manifest. Either failure means the user skipped a step
-# upstream — abort before burning 12-18h of A100 time.
+# Pre-flight: assert the splits JSON has been regenerated with PDB-
+# atom-sequence dedup. If still pre-dedup (n_members > 300) or using
+# the legacy CSV-based key, abort before burning 12-18h of A100 time.
 python -c "
 import json, sys
-from pathlib import Path
-
-mani_clean = Path('data/datasets/diffab_manifest_clean.tsv')
-if not mani_clean.exists():
-    print(f'ERROR: clean manifest missing: {mani_clean}', file=sys.stderr)
-    print('Run scripts/diffab_ft/clean_manifest.py first.', file=sys.stderr)
-    sys.exit(1)
-import pandas as pd
-n_mani = len(pd.read_csv(mani_clean, sep='\t'))
-print(f'clean manifest: {n_mani} rows')
-
 d = json.load(open('data/datasets/clustering/cluster_splits.json'))
 n_members = d['params'].get('n_members', 0)
 dedupe_by = d['params'].get('dedupe_by', None)
 print(f'splits: n_members={n_members}, dedupe_by={dedupe_by!r}')
 if dedupe_by is None or n_members > 300:
     print('ERROR: splits look like the pre-dedup (broken seed42) version.', file=sys.stderr)
-    print('Re-run scripts/diffab_ft/cluster_split.py --dedupe-by raw_sequence', file=sys.stderr)
-    print('  --manifest-tsv data/datasets/diffab_manifest_clean.tsv', file=sys.stderr)
+    print('Re-run: python scripts/diffab_ft/cluster_split.py \\\\', file=sys.stderr)
+    print('    --dedupe-by pdb_atom_sequence  # default but be explicit', file=sys.stderr)
+    print('    --audit-antigens --overwrite', file=sys.stderr)
     sys.exit(1)
+if dedupe_by != 'pdb_atom_sequence':
+    print(f'WARN: splits used --dedupe-by={dedupe_by!r}, not pdb_atom_sequence.', file=sys.stderr)
+    print('This is the CSV-based legacy key — proceed if intentional.', file=sys.stderr)
 "
 
 # ── Run ─────────────────────────────────────────────────────────────

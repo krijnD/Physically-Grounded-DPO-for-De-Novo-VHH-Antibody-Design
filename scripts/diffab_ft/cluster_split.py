@@ -225,6 +225,31 @@ def build_manifest_index(
     return index
 
 
+def extract_chain_atom_sequence(pdb_path: Path, chain_id: str) -> str:
+    """Return the PDB ATOM-record sequence of one chain (joined across
+    polypeptide breaks). Empty string if chain absent or unparseable.
+
+    This is what DiffAb's training loop actually consumes — the sequence
+    is derived from CA atoms of the resolved residues, joined across
+    PPBuilder-detected polypeptide breaks. Use this for sequence-based
+    dedup so the dedup key matches the model's view of the data, not the
+    (often-mislabeled) CSV metadata.
+    """
+    from Bio.PDB import PDBParser
+    from Bio.PDB.Polypeptide import PPBuilder
+
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure(pdb_path.stem, str(pdb_path))
+    ppb = PPBuilder()
+    for model in structure:
+        for chain in model:
+            if chain.id == chain_id:
+                seqs = [str(pp.get_sequence()) for pp in ppb.build_peptides(chain)]
+                return "".join(seqs)
+        break  # only first model
+    return ""
+
+
 # ── Cluster-level split ───────────────────────────────────────────────────
 def cluster_level_split(
     member_to_rep: dict[str, str],
@@ -396,16 +421,19 @@ def main() -> None:
                         help="Numbering scheme for CDR extraction (default: chothia).")
     parser.add_argument(
         "--dedupe-by",
-        choices=["raw_sequence", "concat_cdrs", "none"],
-        default="raw_sequence",
+        choices=["pdb_atom_sequence", "raw_sequence", "concat_cdrs", "none"],
+        default="pdb_atom_sequence",
         help=(
             "Collapse manifest entries that share this key to one representative "
-            "before clustering. 'raw_sequence' uses the full VHH heavy-chain AA "
-            "from the curated CSV (default; matches the calibration convention "
-            "in docs/threshold_calibration_context.md §5). 'concat_cdrs' uses "
-            "CDR-H1+H2+H3 only (more aggressive). 'none' reproduces the pre-dedup "
-            "behavior of the broken seed42 run. Representative is chosen by "
-            "best resolution → latest date → lex pdb_id."
+            "before clustering. Default 'pdb_atom_sequence' uses the curated "
+            "H-chain's ATOM-record sequence — the actual data DiffAb trains on. "
+            "Use this for any new run. 'raw_sequence' (legacy) uses the CSV's "
+            "Ab/Nano H_Chain AA column; over-aggressively dedupes mislabeled-"
+            "but-distinct entries (the audit_pdb_atom_diversity.py script shows "
+            "a 138-entry CSV cluster is actually 11 different PDB sequences). "
+            "'concat_cdrs' uses CDR-H1+H2+H3 only from the CSV (most aggressive). "
+            "'none' reproduces the pre-dedup behavior of the broken seed42 run. "
+            "Representative is chosen by best resolution → latest date → lex pdb_id."
         ),
     )
     parser.add_argument("--ratios", type=float, nargs=3,
@@ -428,8 +456,12 @@ def main() -> None:
         if not p.exists():
             logger.error("File not found: %s", p)
             sys.exit(1)
-    if args.audit_antigens and (not args.pdb_dir.exists() or not args.pdb_dir.is_dir()):
-        logger.error("PDB dir required for --audit-antigens but not found: %s", args.pdb_dir)
+    pdb_dir_needed = args.audit_antigens or args.dedupe_by == "pdb_atom_sequence"
+    if pdb_dir_needed and (not args.pdb_dir.exists() or not args.pdb_dir.is_dir()):
+        logger.error(
+            "PDB dir is required (for --audit-antigens or --dedupe-by "
+            "pdb_atom_sequence) but not found: %s", args.pdb_dir,
+        )
         sys.exit(1)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -499,7 +531,36 @@ def main() -> None:
         logger.info("Dedup disabled (--dedupe-by none): keeping all %d entries.",
                     n_before_dedup)
     else:
-        if args.dedupe_by == "raw_sequence":
+        # Build the key lookup per entry
+        if args.dedupe_by == "pdb_atom_sequence":
+            # Extract PDB ATOM-record sequences. ~5-7 min for 465 entries.
+            logger.info("Extracting PDB ATOM-record sequences for %d entries "
+                        "(this takes ~5-7 min)...", n_extracted)
+            entry_to_pdb_seq: dict[str, str] = {}
+            n_pdb_missing = 0
+            for i, eid in enumerate(entry_to_cdr):
+                pdb_id, h_chain = eid.rsplit("_", 1)
+                pdb_path = args.pdb_dir / f"{pdb_id}.pdb"
+                if not pdb_path.exists():
+                    pdb_path = args.pdb_dir / f"{pdb_id.upper()}.pdb"
+                if not pdb_path.exists():
+                    n_pdb_missing += 1
+                    continue
+                try:
+                    pdb_seq = extract_chain_atom_sequence(pdb_path, h_chain)
+                except Exception as exc:
+                    logger.warning("PDB extract failed for %s: %s", eid, exc)
+                    n_pdb_missing += 1
+                    continue
+                if pdb_seq:
+                    entry_to_pdb_seq[eid] = pdb_seq
+                if (i + 1) % 50 == 0:
+                    logger.info("  ...PDB-seq extracted %d/%d", i + 1, n_extracted)
+            if n_pdb_missing:
+                logger.warning("Skipped %d entries: PDB file missing or chain "
+                               "absent (these stay unclustered).", n_pdb_missing)
+            key_fn = lambda eid: entry_to_pdb_seq.get(eid, f"__no_pdb_seq__{eid}")
+        elif args.dedupe_by == "raw_sequence":
             key_fn = lambda eid: entry_to_raw_seq[eid]
         else:  # concat_cdrs
             key_fn = lambda eid: entry_to_cdr[eid]
