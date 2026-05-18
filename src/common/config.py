@@ -18,6 +18,14 @@ class Config:
     # (aggregation risk); negative = polar-shielded (compensated by CDR loops).
     # Threshold of +0.15 corresponds to Chennamsetty/Sankar "aggregation-prone"
     # surface — never derived from this project's data, taken from literature.
+    #
+    # Calibration confirms +0.15 is correct as an ABSOLUTE-FAIL CATCH, not a
+    # population-percentile gate: empirical p80 across all four FR2 hallmarks
+    # on natural ANDD (post-dedup, full arm) is in [-0.06, -0.001] — all
+    # natural VHHs pass by ~10 SDs. The judge is calibrated to detect
+    # AAPR-generated pathologies (exposed unshielded indole on solvent-facing
+    # W47, etc.), not to reject natural VHHs.
+    # See docs/calibration/threshold_decisions.md §5.6 for full rationale.
     SAP_SAFETY_THRESHOLD: float = 0.15
     SAP_RADIUS: float = 10.0  # Angstroms
 
@@ -47,13 +55,26 @@ class Config:
     CDR3_HYDROPHOBIC_RESIDUES: set[str] = {"W", "F"}
 
     # ── Biophysics Judge (TNP) ──
-    # PSH: strict green zone (Gordon et al., 36 clinical nanobodies)
+    # All three TNP thresholds (PSH, PPC, Compactness) are kept at Gordon et al.
+    # 2026 clinical-36-nanobody calibration. ANDD natural-VHH empirical p80
+    # (post sequence-dedup, full arm, n=205) validates two of three:
+    #   - PSH:        empirical p80 = 113.2 [110.4, 115.2] — inside green zone
+    #   - Compactness: empirical p80 =  1.44 [+1.42, +1.47] — inside [0.81, 1.57]
+    #   - PPC:        empirical p80 = 0.498 [+0.37, +1.11] — ABOVE Gordon's 0.39
+    # The PPC mismatch is an intentional clinical-vs-natural distribution shift:
+    # Gordon's < 0.39 is a pharmacokinetic constraint (in-vivo clearance),
+    # not a folding/aggregation metric. Natural PDB VHHs were not selected
+    # for half-life; clinical-stage VHHs were. Keeping Gordon's 0.39 means
+    # the Biophysics Judge rejects ~20% of natural ANDD as "clinical-grade
+    # PK-disqualifying" — the desired behavior for a developability gate
+    # in a DPO pipeline aimed at clinical-grade outputs.
+    # See docs/calibration/threshold_decisions.md §5.5 for full rationale.
     PSH_GREEN_LOW: float = 79.59
     PSH_GREEN_HIGH: float = 126.83
     # PSH: extended amber/red boundaries (for logging/reporting)
     PSH_RED_LOW: float = 73.4
     PSH_RED_HIGH: float = 155.47
-    PPC_MAX: float = 0.39
+    PPC_MAX: float = 0.39   # Clinical PK constraint, not natural-VHH prevalence
     COMPACTNESS_LOW: float = 0.81
     COMPACTNESS_HIGH: float = 1.57
     # TNP runtime
