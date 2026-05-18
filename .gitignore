@@ -12,7 +12,14 @@
 # Per-run outputs.
 /runs/
 /logs/
-/data/results/
+# Ignore generated parquets under /data/results/ by default, but keep the
+# threshold-calibration parquets versioned so the AbDPO §E.1 percentile
+# derivation reproduces without HPC access. (Negations on individual files
+# only work if the parent directory itself is not ignored — hence the glob
+# on contents rather than a directory-level ignore.)
+/data/results/*
+!/data/results/andd_calibration_pack.parquet
+!/data/results/andd_calibration_full.parquet
 
 # DiffAb's LMDB cache + MMseqs2 intermediates.
 /data/processed/
@@ -28,3 +35,4 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+/docs

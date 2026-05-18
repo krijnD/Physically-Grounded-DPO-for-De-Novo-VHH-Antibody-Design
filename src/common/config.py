@@ -65,29 +65,41 @@ class Config:
     # residues, here additionally divided by N_CDR_residues for scope-
     # invariance (works under CDR-H3-only or multi-CDR π_ref scope).
     #
-    # ── CALIBRATION PASS (current) ──
-    # Both thresholds are set to a large sentinel value so the Physics
-    # Judge fast-fail short-circuit in `rosetta_scorer.score_complex()` is
-    # disabled and every non-crashing GT row is fully scored (residue-
-    # level + sub-residue side-chain energies populated for all rows).
-    # This lets the AAPR/calibration parquet carry the complete empirical
-    # distribution of all Physics scalars over the curated ANDD GT set,
-    # so percentile-based thresholds can be derived post-hoc following
-    # AbDPO Appendix E.1 (Zhou et al. NeurIPS 2024, Table 4) — they
-    # report success rates at the 50/55/.../95th percentiles of the real
-    # antibody training-set distribution and pick the 80th as the
-    # headline cutoff. Same convention applies here on natural VHHs.
+    # ── EMPIRICAL CALIBRATION (AbDPO Appendix E.1 methodology) ──
+    # Both thresholds are the 80th-percentile of the natural ANDD VHH
+    # GT distribution under `--refinement-mode full` (full-complex
+    # side-chain repack + FastRelax on CDR loops), n=458 after dropping
+    # 7 PyRosetta-crash rows. Bootstrap 95% CIs from 1000 resamples,
+    # seed=42. See scripts/calibration/percentile_analysis.py and
+    # docs/calibration/pack_vs_full_summary.md.
     #
-    # Replace with empirically-derived percentile values after the
-    # `andd_calibration_full.parquet` and `andd_calibration_pack.parquet`
-    # arms are merged and analysed. Previous (literature-derived,
-    # superseded) values: CDR_ENERGY_PER_RES_REJECT = -0.2,
-    # E_REP_REJECT = 5.0. Those rejected ~40% of the natural ANDD
-    # distribution because they were imported from AbDPO's paired-
-    # antibody CDR-H3-only paper without re-calibration for VHH scope
-    # and a different scoring regime.
-    CDR_ENERGY_PER_RES_REJECT: float = 1.0e9  # REU/residue — calibration sentinel
-    E_REP_REJECT: float = 1.0e9               # REU — calibration sentinel
+    # Refinement-regime choice: the `pack_cdrs` arm yields p80 = +9.72
+    # REU/residue for cdr_energy_per_res because it inherits unresolved
+    # GT clashes that aren't physics — they're crystallographic noise
+    # that FastRelax dissolves. Pack/full CIs are disjoint on 4 of 5
+    # physics scalars; this is a regime change, not measurement noise.
+    # Thus AAPR generation MUST also use `--refinement-mode full` so the
+    # scored candidates and the GT distribution live in the same regime.
+    #
+    # Note the per-residue convention: AbDPO Table 4 reports values
+    # SUMMED over CDR-H3 residues; thesis project divides by
+    # N_CDR_residues (mean 33.15 in ANDD full arm) for scope-invariance
+    # across CDR-H3-only ablation and multi-CDR main run. Multiply by
+    # ~33 to recover AbDPO's summed scale for direct paper comparison.
+    #
+    # Previous (literature-derived, superseded) values:
+    #   CDR_ENERGY_PER_RES_REJECT = -0.2  — misattributed to AbDPO; the
+    #     actual figure was never per-residue in the source, and even at
+    #     -0.2 it rejected ~40% of natural ANDD when applied under
+    #     pack_cdrs. Tellingly, the empirical full p80 of -0.183 is
+    #     within rounding distance of -0.2 — so the literature number
+    #     was correct in spirit, but the calibration regime that
+    #     produced it was full-relax, not pack-only.
+    #   E_REP_REJECT = 5.0  — also dropped ~80% of natural ANDD at p80
+    #     (both pack and full arms exceed it at p70+), suggesting the
+    #     5.0 cap was tuned for a different scoring/interface scope.
+    CDR_ENERGY_PER_RES_REJECT: float = -0.183  # REU/residue. Full p80, CI [-0.320, -0.059]. AbDPO §E.1
+    E_REP_REJECT: float = 5.746                # REU. Full p80, CI [+5.162, +6.338]. AbDPO §E.1
     # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
