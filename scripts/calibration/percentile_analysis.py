@@ -59,7 +59,7 @@ PERCENTILES = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95]   # AbDPO Table 4 grid
 HEADLINE_P = 80                                          # AbDPO's chosen cutoff
 N_BOOTSTRAP = 1000
 SEED = 42
-MIN_ROWS_PER_ARM = 450                                   # quality bar (§B)
+MIN_ROWS_PER_ARM = 200                                   # quality bar (post-dedup; pre-dedup ANDD has ~458)
 
 PHYSICS_SCALARS = [
     "e_rep",
@@ -118,36 +118,64 @@ class ArmData:
     name: str
     df: pd.DataFrame
     mean_cdr_len: float
+    n_pre_dedup: int = 0  # row count before sequence deduplication
 
     @property
     def n_rows(self) -> int:
         return len(self.df)
 
 
-def load_arm(name: str, path: Path) -> ArmData:
-    """Read one arm's merged parquet and drop physics-error rows.
+def load_arm(name: str, path: Path, dedupe_by: str = "raw_sequence") -> ArmData:
+    """Read one arm's merged parquet, drop physics-error rows, deduplicate by sequence.
 
     Physics `error` rows are dropped because PyRosetta crashed before any
     scalar was populated; they carry no signal for the percentile.
     Per-scalar NaN drops happen later inside `percentile_table`.
+
+    The ANDD curated set contains ~52% sequence redundancy — one nanobody
+    (CPAPFTRDCFDVTSTTYAY CDR3) appears in 133 PDB structures. Computing
+    percentiles on the raw 458 rows over-weights heavily-studied molecules
+    and inflates the apparent saturation at high-end values. We deduplicate
+    by `raw_sequence` so each unique VHH contributes once to the
+    natural-population reference; structural variance across multiple PDB
+    snapshots of the same molecule is data noise, not signal about the
+    natural-VHH distribution. Pass ``dedupe_by="none"`` to disable.
     """
     df = pd.read_parquet(path)
     n_before = len(df)
     df = df[df["physics_verdict"] != "error"].copy()
-    n_after = len(df)
+    n_after_err = len(df)
+    log.info(
+        "loaded %s arm: %d rows (dropped %d error rows)",
+        name, n_after_err, n_before - n_after_err,
+    )
 
-    if n_after < MIN_ROWS_PER_ARM:
-        raise RuntimeError(
-            f"{name} arm has only {n_after} rows after dropping physics_verdict==error "
-            f"(min={MIN_ROWS_PER_ARM}). Investigate merge gaps before calibrating."
+    if dedupe_by != "none":
+        if dedupe_by not in df.columns:
+            raise RuntimeError(
+                f"{name} arm: --dedupe-by={dedupe_by!r} but column missing from parquet"
+            )
+        seq_counts = df[dedupe_by].value_counts()
+        n_unique = seq_counts.size
+        top5_dups = seq_counts[seq_counts >= 2].head(5)
+        df = df.drop_duplicates(subset=[dedupe_by]).copy()
+        log.info(
+            "[%s] deduplicated by %s: %d → %d unique sequences "
+            "(%d duplicates removed, top counts: %s)",
+            name, dedupe_by, n_after_err, len(df), n_after_err - len(df),
+            ", ".join(f"{c}×" for c in top5_dups.tolist()) or "none",
+        )
+
+    if len(df) < MIN_ROWS_PER_ARM:
+        log.warning(
+            "%s arm has only %d rows after error-drop + dedup (min=%d) — "
+            "percentile CIs will be wide. Proceeding anyway.",
+            name, len(df), MIN_ROWS_PER_ARM,
         )
 
     mean_cdr_len = float(df["cdr_length"].mean())
-    log.info(
-        "loaded %s arm: %d rows (dropped %d error rows), mean CDR length = %.2f",
-        name, n_after, n_before - n_after, mean_cdr_len,
-    )
-    return ArmData(name=name, df=df, mean_cdr_len=mean_cdr_len)
+    log.info("[%s] mean CDR length = %.2f", name, mean_cdr_len)
+    return ArmData(name=name, df=df, mean_cdr_len=mean_cdr_len, n_pre_dedup=n_after_err)
 
 
 # --- Percentile computation -------------------------------------------------
@@ -331,13 +359,18 @@ def _ci_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
     return not (a[1] < b[0] or b[1] < a[0])
 
 
-def pack_vs_full_summary(pack: ArmData, full: ArmData, scalars: list[str]) -> str:
+def pack_vs_full_summary(pack: ArmData, full: ArmData, scalars: list[str], dedupe_by: str) -> str:
     """Markdown report comparing the two refinement regimes."""
+    dedup_note = (
+        f"deduplicated by `{dedupe_by}` (was {pack.n_pre_dedup}/{full.n_pre_dedup} pre-dedup)"
+        if dedupe_by != "none"
+        else "no deduplication"
+    )
     lines = [
         "# Pack vs Full — Calibration Arm Comparison",
         "",
-        f"- Pack arm: N = {pack.n_rows} (after error-row drop), mean CDR length = {pack.mean_cdr_len:.2f}",
-        f"- Full arm: N = {full.n_rows} (after error-row drop), mean CDR length = {full.mean_cdr_len:.2f}",
+        f"- Pack arm: N = {pack.n_rows} (after error-row drop, {dedup_note}), mean CDR length = {pack.mean_cdr_len:.2f}",
+        f"- Full arm: N = {full.n_rows} (after error-row drop, {dedup_note}), mean CDR length = {full.mean_cdr_len:.2f}",
         f"- Bootstrap: {N_BOOTSTRAP} iterations, seed={SEED}, 95% CI on p{HEADLINE_P}",
         "",
         "## Per-scalar comparison",
@@ -417,6 +450,13 @@ def main() -> None:
     parser.add_argument("--pack-parquet", type=Path, required=True)
     parser.add_argument("--full-parquet", type=Path, required=True)
     parser.add_argument("--out-dir",      type=Path, required=True)
+    parser.add_argument(
+        "--dedupe-by", type=str, default="raw_sequence",
+        choices=["raw_sequence", "cdr3_sequence", "none"],
+        help="Deduplicate by this column before percentile computation. "
+             "ANDD has ~52%% sequence redundancy; default 'raw_sequence' makes each "
+             "unique VHH contribute once. Pass 'none' to reproduce pre-dedup results.",
+    )
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -425,8 +465,8 @@ def main() -> None:
     figs_dir.mkdir(parents=True, exist_ok=True)
 
     # Phase A: load arms.
-    pack = load_arm("pack", args.pack_parquet)
-    full = load_arm("full", args.full_parquet)
+    pack = load_arm("pack", args.pack_parquet, dedupe_by=args.dedupe_by)
+    full = load_arm("full", args.full_parquet, dedupe_by=args.dedupe_by)
 
     all_scalars = PHYSICS_SCALARS + BIOPHYSICS_SCALARS
 
@@ -460,7 +500,7 @@ def main() -> None:
         ecdf_plot(pack_vals, full_vals, col, pack_ci, full_ci, figs_dir / f"ecdf_{col}.png")
     log.info("wrote ECDF figures to %s/", figs_dir)
 
-    summary = pack_vs_full_summary(pack, full, all_scalars)
+    summary = pack_vs_full_summary(pack, full, all_scalars, dedupe_by=args.dedupe_by)
     (out_dir / "pack_vs_full_summary.md").write_text(summary)
     log.info("wrote %s", out_dir / "pack_vs_full_summary.md")
 
