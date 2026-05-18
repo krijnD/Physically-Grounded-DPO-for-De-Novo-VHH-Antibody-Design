@@ -347,23 +347,31 @@ def run_consistency_audit(args: argparse.Namespace) -> dict:
     if proc.stderr:
         sys.stderr.write(proc.stderr)
 
-    # Parse the lines we care about
+    # Parse the lines we care about. Use regex to robustly handle the
+    # "N ( XX.X%)" formatting where whitespace varies inside parens.
+    import re
     result = {"returncode": proc.returncode, "raw_stdout": proc.stdout}
+    re_count_pct = re.compile(r":\s*(\d+)\s*\(\s*([\d.]+)%\)")
+    re_count = re.compile(r":\s*(\d+)\s*\(")
     for line in proc.stdout.splitlines():
         ls = line.strip()
         if ls.startswith("manifest rows:"):
-            result["total"] = int(ls.split(":")[1].strip())
+            m = re.search(r":\s*(\d+)", ls)
+            if m:
+                result["total"] = int(m.group(1))
         elif "fully consistent:" in ls:
-            # "  fully consistent:           182  ( 39.1%)"
-            parts = ls.split(":")[1].strip().split()
-            result["consistent"] = int(parts[0])
-            result["consistent_pct"] = float(parts[1].strip("(%)"))
+            m = re_count_pct.search(ls)
+            if m:
+                result["consistent"] = int(m.group(1))
+                result["consistent_pct"] = float(m.group(2))
         elif "length mismatch" in ls:
-            parts = ls.split(":")[1].strip().split()
-            result["len_mismatch"] = int(parts[0])
+            m = re_count.search(ls)
+            if m:
+                result["len_mismatch"] = int(m.group(1))
         elif "seq mismatch" in ls:
-            parts = ls.split(":")[1].strip().split()
-            result["seq_mismatch"] = int(parts[0])
+            m = re_count.search(ls)
+            if m:
+                result["seq_mismatch"] = int(m.group(1))
     result["healthy"] = result.get("consistent_pct", 0.0) >= 30.0
     return result
 
