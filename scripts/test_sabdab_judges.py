@@ -38,7 +38,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.common.candidate import NanobodyCandidate
 from src.common.pdb_utils import load_structure
-from src.common.sabdab_loader import load_sabdab_entries, load_andd_entries, load_pdb_entries
+from src.common.sabdab_loader import (
+    load_sabdab_entries, load_andd_entries, load_aapr_entries, load_pdb_entries,
+)
 from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
 from src.biophysics_judge.judge import BiophysicsJudge
@@ -93,13 +95,16 @@ def main():
     parser.add_argument(
         "--csv",
         default=None,
-        help="Path to ANDD_VHH_with_structure.csv (ANDD mode). "
-             "Chain IDs and sequences are read from the CSV automatically.",
+        help="Path to ANDD_VHH_with_structure.csv (ANDD mode) OR an "
+             "AAPR candidate manifest CSV (auto-detected by presence of "
+             "the `gt_complex_id` column). For AAPR mode `--pdb-dir` is "
+             "ignored because per-row `complex_pdb_path` is in the CSV.",
     )
     parser.add_argument(
         "--pdb-dir",
-        required=True,
-        help="Directory containing PDB files.",
+        default=None,
+        help="Directory containing PDB files. Required for SAbDab/ANDD "
+             "modes; ignored for AAPR mode (per-row paths are in the CSV).",
     )
     parser.add_argument(
         "--chain",
@@ -149,13 +154,33 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load entries — three modes: SAbDab TSV, ANDD CSV, or plain PDB directory
+    # Load entries — four modes:
+    #   1. SAbDab TSV (--tsv): needs --pdb-dir
+    #   2. ANDD CSV (--csv without gt_complex_id col): needs --pdb-dir
+    #   3. AAPR manifest CSV (--csv with gt_complex_id col): no --pdb-dir needed
+    #   4. Plain PDB directory (no --tsv, no --csv): needs --pdb-dir
     if args.tsv:
+        if args.pdb_dir is None:
+            logger.error("--tsv mode requires --pdb-dir.")
+            sys.exit(2)
         entries = load_sabdab_entries(args.tsv, args.pdb_dir)
     elif args.csv:
-        logger.info("Loading ANDD entries from CSV: %s", args.csv)
-        entries = load_andd_entries(args.csv, args.pdb_dir)
+        # Peek the header to decide ANDD vs AAPR.
+        with open(args.csv) as fh:
+            header = fh.readline()
+        if "gt_complex_id" in header:
+            logger.info("Detected AAPR manifest (gt_complex_id present): %s", args.csv)
+            entries = load_aapr_entries(args.csv)
+        else:
+            if args.pdb_dir is None:
+                logger.error("ANDD CSV mode requires --pdb-dir.")
+                sys.exit(2)
+            logger.info("Loading ANDD entries from CSV: %s", args.csv)
+            entries = load_andd_entries(args.csv, args.pdb_dir)
     else:
+        if args.pdb_dir is None:
+            logger.error("PDB-directory mode requires --pdb-dir.")
+            sys.exit(2)
         logger.info(
             "No --tsv or --csv provided; loading PDB files directly "
             "(chain='%s', antigen='%s').",
@@ -165,7 +190,7 @@ def main():
             args.pdb_dir, chain_id=args.chain, antigen_chain_id=args.antigen_chain
         )
     if not entries:
-        logger.error("No valid SAbDab entries found. Check paths.")
+        logger.error("No valid entries found. Check paths.")
         sys.exit(1)
 
     if args.limit:
@@ -195,6 +220,8 @@ def main():
             complex_pdb_path=entry.get("complex_pdb_path"),
             nanobody_chain_id=entry.get("nanobody_chain_id"),
             antigen_chain_ids=entry.get("antigen_chain_ids"),
+            gt_complex_id=entry.get("gt_complex_id"),
+            sample_idx=entry.get("sample_idx"),
         )
         annotate_and_filter(candidate)
         all_candidates.append(candidate)
