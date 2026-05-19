@@ -11,6 +11,7 @@ judges, enforcing the "Fold Once, Judge Many" architecture.
 
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import threading
@@ -123,6 +124,14 @@ def run_tnp_batch(
     """
     if not sequences:
         return {}
+
+    # Slurm-array isolation: under array jobs, multiple tasks share the
+    # same output_dir and race on TNP's internal mkdir("Raw_Model_Outputs").
+    # Cost ~3 chunks on the calibration run. Append the task ID so each
+    # task gets its own scratch directory.
+    array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+    if array_task_id is not None:
+        output_dir = output_dir / f"task_{array_task_id}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
