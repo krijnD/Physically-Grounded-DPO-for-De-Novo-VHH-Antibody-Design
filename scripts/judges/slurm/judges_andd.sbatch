@@ -27,7 +27,7 @@
 #SBATCH --partition=rome
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --array=0-31
 
 set -euo pipefail
@@ -72,11 +72,18 @@ echo "Output:      $OUT_PARQUET"
 echo "Started:     $(date -Iseconds)"
 
 # ── Run ─────────────────────────────────────────────────────────────
+# Refinement mode: `full` is the canonical regime locked by the §5.5
+# calibration (commit 59c1208, docs/calibration/threshold_decisions.md).
+# Pack-mode p80 inherits unresolved GT clashes; full-mode resolves them
+# via FastRelax. Wall-time ~5-6 min/row in full (vs ~10-30s/row in pack);
+# at 15 rows/chunk this is ~90 min, well under the 12h --time budget.
+# For AAPR scoring at higher rows/chunk, bump --time and/or --array
+# accordingly.
 python scripts/test_sabdab_judges.py \
     --csv "$CSV_FILE" \
     --pdb-dir "$PDB_DIR" \
     --output "$OUT_PARQUET" \
-    --refinement-mode pack_cdrs \
+    --refinement-mode full \
     --run-tnp --ncores 4
 
 echo "Finished:    $(date -Iseconds)"
