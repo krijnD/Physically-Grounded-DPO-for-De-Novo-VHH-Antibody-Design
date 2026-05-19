@@ -44,10 +44,16 @@ module load HMMER/3.4-gompi-2024a
 source /projects/0/hpmlprjs/interns/krijn/venvs/DPO/bin/activate
 
 
-# ── Paths ───────────────────────────────────────────────────────────
-CHUNK_DIR=data/results/judges_chunks
-OUT_DIR=data/results/judges_andd
-PDB_DIR=/projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+# ── Paths (overridable via sbatch --export=KEY=VAL) ─────────────────
+# Defaults are GT-scoring. For AAPR scoring, override:
+#   sbatch --array=0-N-1 \
+#          --export=ALL,CHUNK_DIR=/path/to/aapr/chunks,OUT_DIR=/path/to/aapr/scored \
+#          scripts/judges/slurm/judges_andd.sbatch
+# In AAPR mode test_sabdab_judges.py auto-detects via the gt_complex_id
+# column and uses each row's complex_pdb_path, so PDB_DIR is ignored.
+CHUNK_DIR="${CHUNK_DIR:-data/results/judges_chunks}"
+OUT_DIR="${OUT_DIR:-data/results/judges_andd}"
+PDB_DIR="${PDB_DIR:-/projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab}"
 
 mkdir -p "$OUT_DIR" logs/slurm
 
