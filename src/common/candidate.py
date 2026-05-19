@@ -14,6 +14,15 @@ class NanobodyCandidate:
     candidate_id: str
     raw_sequence: str
 
+    # --- AAPR provenance (None for GT/SAbDab/ANDD candidates) ---
+    # When this candidate comes from the AAPR sampler, these record the
+    # parent GT it was generated from and the K-replicate index within
+    # that GT. Required for downstream Pareto pair selection
+    # (scripts/dpo/select_pareto_pairs.py groups by gt_complex_id to
+    # find the winner for each loser). Always None for natural GT rows.
+    gt_complex_id: Optional[str] = None
+    sample_idx: Optional[int] = None
+
     # --- 1D Sequence Annotations (set by Phase 1 filter) ---
     kabat_mapping: dict = field(default_factory=dict)
     biology_flags: list[str] = field(default_factory=list)
@@ -74,6 +83,8 @@ class NanobodyCandidate:
             "candidate_id": self.candidate_id,
             "raw_sequence": self.raw_sequence,
             "cdr3_sequence": self.cdr3_sequence,
+            "gt_complex_id": self.gt_complex_id,
+            "sample_idx": self.sample_idx,
             "pdb_filepath": self.pdb_filepath,
             "complex_pdb_path": self.complex_pdb_path,
             "nanobody_chain_id": self.nanobody_chain_id,
