@@ -84,6 +84,12 @@ if dedupe_by != 'pdb_atom_sequence':
 "
 
 # ── Run ─────────────────────────────────────────────────────────────
+# W&B online mode so the live dashboard link prints in the first
+# minute of the job (look for "View run at https://wandb.ai/..." in
+# the log). If the compute node can't reach api.wandb.ai, W&B falls
+# back to offline mode automatically and prints a sync command — the
+# run is never lost, just delayed. To watch live from your laptop:
+#     tail -F logs/slurm/diffab_ft_dedup_<jobid>.out | grep -m1 "View run"
 python scripts/diffab_ft/train.py \
     configs/diffab_ft/vhh_ft.yml \
     --output-dir runs/vhh_ft \
@@ -92,6 +98,6 @@ python scripts/diffab_ft/train.py \
     --wandb-project vhh-diffab-ft \
     --wandb-run-name seed42_dedup \
     --wandb-group   vhh_ft \
-    --wandb-mode    offline   # safer on compute nodes; sync after with `wandb sync`
+    --wandb-mode    online
 
 echo "Finished: $(date -Iseconds)"
