@@ -266,6 +266,89 @@ def load_andd_entries(csv_path: str, pdb_dir: str) -> list[dict]:
     return entries
 
 
+def load_aapr_entries(csv_path: str) -> list[dict]:
+    """Load pipeline-ready entries from an AAPR candidate manifest CSV.
+
+    The AAPR sampler (``scripts/aapr/sample_candidates.py``) emits one row
+    per (GT, sample) candidate with the per-row ``complex_pdb_path``
+    already pointing at the generated PDB. Unlike SAbDab/ANDD loading,
+    there is no directory search and no sequence-from-PDB extraction —
+    the manifest carries everything the judges need.
+
+    Critically, this loader preserves ``gt_complex_id`` and ``sample_idx``
+    from the manifest so the scored parquet retains the grouping needed
+    by downstream Pareto pair selection.
+
+    Manifest schema (per docs/aapr_generation_context.md §6):
+      - ``candidate_id``: per-sample primary key (e.g. ``7f5g_B_s0003``)
+      - ``gt_complex_id``: parent GT id (e.g. ``7f5g_B``)
+      - ``sample_idx``: 0..K-1 replicate index
+      - ``raw_sequence``: reconstructed VHH sequence
+      - ``complex_pdb_path``: path to the AAPR-generated PDB
+      - ``nanobody_chain_id``: chain letter for the VHH
+      - ``antigen_chain_ids``: comma-joined antigen chain letter(s)
+      - (plus provenance: ``mask_strategy``, ``cdrs_masked``,
+        ``temperature``, ``checkpoint_id``, ``seed``)
+
+    Args:
+        csv_path: Path to the AAPR manifest CSV.
+
+    Returns:
+        List of dicts with the keys shared by :func:`load_andd_entries`
+        plus ``gt_complex_id`` and ``sample_idx`` for downstream grouping.
+        Rows whose ``complex_pdb_path`` is missing on disk are skipped
+        with a warning.
+    """
+    df = pd.read_csv(csv_path)
+    logger.info("AAPR manifest: %d rows in %s", len(df), csv_path)
+
+    required = {
+        "candidate_id", "gt_complex_id", "sample_idx", "raw_sequence",
+        "complex_pdb_path", "nanobody_chain_id", "antigen_chain_ids",
+    }
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"AAPR manifest {csv_path!r} is missing required columns: "
+            f"{sorted(missing)}. Expected schema from "
+            "docs/aapr_generation_context.md §6."
+        )
+
+    entries: list[dict] = []
+    skipped_no_file = 0
+    for _, row in df.iterrows():
+        pdb_path = Path(str(row["complex_pdb_path"]))
+        if not pdb_path.exists():
+            skipped_no_file += 1
+            logger.debug("PDB not on disk for %s: %s", row["candidate_id"], pdb_path)
+            continue
+
+        ag_chains = row.get("antigen_chain_ids")
+        if pd.isna(ag_chains) or str(ag_chains).strip() in ("", "nan"):
+            ag_chains = None
+        else:
+            ag_chains = str(ag_chains).strip()
+
+        entries.append(
+            {
+                "candidate_id":      str(row["candidate_id"]),
+                "raw_sequence":      str(row["raw_sequence"]),
+                "pdb_filepath":      str(pdb_path),
+                "complex_pdb_path":  str(pdb_path) if ag_chains else None,
+                "nanobody_chain_id": str(row["nanobody_chain_id"]),
+                "antigen_chain_ids": ag_chains,
+                "gt_complex_id":     str(row["gt_complex_id"]),
+                "sample_idx":        int(row["sample_idx"]),
+            }
+        )
+
+    logger.info(
+        "AAPR: loaded %d entries (skipped %d missing PDB files).",
+        len(entries), skipped_no_file,
+    )
+    return entries
+
+
 def load_pdb_entries(
     pdb_dir: str,
     chain_id: str = "A",
