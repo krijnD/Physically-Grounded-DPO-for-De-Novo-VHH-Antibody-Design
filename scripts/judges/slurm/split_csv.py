@@ -75,22 +75,31 @@ def main() -> None:
         logger.error("Input CSV has a header but no data rows.")
         sys.exit(1)
 
-    # Ceiling division so the last chunk is the smallest, not empty.
+    # Even distribution: floor-divide and spread the remainder across
+    # the first (n_rows % n_chunks) chunks. Earlier versions used ceiling
+    # division (chunk_size = ceil(n_rows / n_chunks)), which produced
+    # n_chunks-1 actual chunks when n_chunks evenly divided into the
+    # ceiling — e.g. --n-chunks 32 on 465 rows gave 31 chunks because
+    # 15*31 = 465 exactly, so the 32nd task always failed.
     n_chunks = min(args.n_chunks, n_rows)
     if n_chunks < args.n_chunks:
         logger.warning(
             "Requested %d chunks but only %d data rows — producing %d chunks.",
             args.n_chunks, n_rows, n_chunks,
         )
-    chunk_size = (n_rows + n_chunks - 1) // n_chunks
+
+    base_size, remainder = divmod(n_rows, n_chunks)
+    # First `remainder` chunks get an extra row.
+    chunk_sizes = [base_size + 1] * remainder + [base_size] * (n_chunks - remainder)
+    assert sum(chunk_sizes) == n_rows, (sum(chunk_sizes), n_rows)
+    assert len(chunk_sizes) == n_chunks
 
     width = max(2, len(str(n_chunks - 1)))
     written = 0
-    for i in range(n_chunks):
-        start = i * chunk_size
-        end = min(start + chunk_size, n_rows)
-        if start >= end:
-            break
+    cursor = 0
+    for i, size in enumerate(chunk_sizes):
+        start = cursor
+        end = cursor + size
         chunk_path = output_dir / f"chunk_{i:0{width}d}.csv"
         with chunk_path.open("w", newline="") as fh:
             writer = csv.writer(fh)
@@ -101,6 +110,7 @@ def main() -> None:
             chunk_path, end - start, start, end - 1,
         )
         written += 1
+        cursor = end
 
     logger.info(
         "Done — %d chunks written to %s (%d rows total).",
