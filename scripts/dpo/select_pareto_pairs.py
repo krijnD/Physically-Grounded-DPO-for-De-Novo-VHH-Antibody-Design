@@ -80,6 +80,19 @@ PSH_GREEN_HIGH = 126.83
 AXES = ["psh_outside_zone", "cdr_energy_per_res", "e_rep"]
 
 
+def _normalize_complex_id(raw: str) -> str:
+    """Strip the chain suffix so AAPR's {pdb}_{chain} joins GT's {pdb}.
+
+    AAPR's `gt_complex_id` comes from DiffAb's dataset entry_id format
+    (`{pdb}_{vhh_chain}`, e.g. `7f5h_C`). The GT calibration parquet's
+    `candidate_id` is the bare PDB ID (`7f5h`) — there's one curated VHH
+    per PDB in the ANDD set, so the chain suffix is informational. Strip
+    everything after the first underscore on both sides so the join is
+    symmetric and robust to future format drift.
+    """
+    return raw.split("_", 1)[0] if raw else raw
+
+
 def psh_outside_zone(psh: float) -> float:
     """Distance outside Gordon's PSH green zone. 0 inside, positive outside."""
     if pd.isna(psh):
@@ -146,7 +159,7 @@ def build_winner_pool(gt_df: pd.DataFrame) -> dict[str, dict]:
         if not has_valid_axes(row):
             n_dropped += 1
             continue
-        gid = str(row["candidate_id"])
+        gid = _normalize_complex_id(str(row["candidate_id"]))
         pool[gid] = {
             "candidate_id":      gid,
             "pdb_path":          row.get("complex_pdb_path") or row.get("pdb_filepath"),
@@ -182,7 +195,7 @@ def select_pairs(
         if gid is None or pd.isna(gid):
             stats["skipped_no_gt"] += 1
             continue
-        gid = str(gid)
+        gid = _normalize_complex_id(str(gid))
         winner = winner_pool.get(gid)
         if winner is None:
             stats["skipped_no_gt"] += 1
