@@ -105,71 +105,33 @@ def _find_tnp_json(output_dir: Path) -> Path | None:
     return None
 
 
-def _run_tnp_single(
-    seq_id: str,
-    sequence: str,
-    parent_dir: Path,
-    ncores: int = 1,
-) -> tuple[Optional[TNPResult], str]:
-    """Run TNP on a single sequence in an isolated subdirectory.
+def _is_foldable_vhh(sequence: str) -> tuple[bool, str]:
+    """Cheap prescreen for NanoBodyBuilder2 foldability.
 
-    Used as a retry pass for candidate IDs the batch run failed to
-    return. Returns ``(result, stderr_capture)``; ``stderr_capture`` is
-    always populated (even on success) so per-sequence fold errors —
-    which TNP otherwise only emits to global stderr — are surfaced to
-    the caller for logging.
+    Catches the most common pathology in AAPR-generated VHH sequences:
+    severe C-terminal truncation. NB2's per-sequence log on a refused
+    candidate reads "ANARCI numbered the sequence" + "NanoBodyBuilder2
+    was unable to generate a model" — i.e. ANARCI is permissive but NB2
+    is not, and our Phase 1 filter (which only runs ANARCI) doesn't
+    catch the cases.
+
+    Validation against the 2026-05-19 seed42_dedup canary (n=232,
+    docs/tnp_skip_investigation.md): len<110 catches 40/115 NB2
+    refusals with **0 false positives** (no OK candidate has length
+    <110). Stricter J-region anchor regex checks were considered but
+    false-reject ~16 OK candidates from atypical-J-region GTs (8fcz_C,
+    8pyr_D) that NB2 actually folds fine — not worth losing two whole
+    GTs from DPO coverage.
+
+    Returns ``(True, "ok")`` for sequences that should be sent to TNP;
+    ``(False, reason)`` for ones to skip. Sequences passing this check
+    may still fail NB2 (the 72 mid-length pathological cases), but
+    those failures are no longer cheap to predict and are left to TNP
+    so they get the regular ``skipped_no_tnp`` verdict.
     """
-    subdir = parent_dir / f"retry_{seq_id}"
-    subdir.mkdir(parents=True, exist_ok=True)
-    fasta = subdir / f"{seq_id}.fasta"
-    with open(fasta, "w") as f:
-        f.write(f">{seq_id}\n{sequence}\n")
-
-    cmd = [
-        "TNP",
-        "--file", str(fasta.resolve()),
-        "--output", str(subdir.resolve()),
-        "--ncores", str(ncores),
-        "--name", f"retry_{seq_id}",
-        "--web",
-    ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, cwd=subdir,
-        )
-    except FileNotFoundError:
-        return None, "TNP executable not found"
-
-    stderr = (proc.stderr or "").strip()
-    if proc.returncode != 0:
-        return None, f"exit={proc.returncode}; stderr: {stderr[:800]}"
-
-    json_path = _find_tnp_json(subdir)
-    if json_path is None:
-        files = sorted(p.name for p in subdir.iterdir() if p.is_file())[:20]
-        return None, f"no JSON output; files: {files}; stderr: {stderr[:500]}"
-
-    raw_results = _parse_tnp_json(json_path)
-    pdb_dir = subdir / "Final_Models"
-    for entry in raw_results:
-        name = entry.get("name") or seq_id
-        pdb_path = pdb_dir / f"{name}.pdb"
-        resolved_pdb = str(pdb_path) if pdb_path.exists() else None
-        try:
-            return TNPResult(
-                psh=float(entry["PSH"]),
-                ppc=float(entry["PPC"]),
-                pnc=float(entry["PNC"]),
-                compactness=float(entry["CDR3 Compactness"]),
-                cdr_length=int(entry["Total CDR Length"]),
-                cdr3_length=int(entry["CDR3 Length"]),
-                pdb_path=resolved_pdb,
-                flags=entry.get("Flags"),
-            ), stderr
-        except (KeyError, ValueError, TypeError) as e:
-            return None, f"parse error: {e}; stderr: {stderr[:500]}"
-
-    return None, f"no entries in JSON; stderr: {stderr[:500]}"
+    if len(sequence) < 110:
+        return False, "too_short"
+    return True, "ok"
 
 
 def run_tnp_batch(
@@ -197,6 +159,35 @@ def run_tnp_batch(
     """
     if not sequences:
         return {}
+
+    # Prescreen: drop sequences NB2 will deterministically refuse
+    # (currently: length < 110 — severely C-terminally truncated VHHs).
+    # See _is_foldable_vhh for the validation footprint. Saves ~15s of
+    # TNP/NB2 wall-time per rejected sequence.
+    prescreen_rejects: list[tuple[str, str]] = []
+    foldable: list[dict[str, str]] = []
+    for s in sequences:
+        ok, reason = _is_foldable_vhh(s["sequence"])
+        (foldable if ok else prescreen_rejects).append(
+            s if ok else (s["id"], reason)
+        )
+    if prescreen_rejects:
+        sample = ", ".join(f"{i}({r})" for i, r in prescreen_rejects[:10])
+        if len(prescreen_rejects) > 10:
+            sample += f" … (+{len(prescreen_rejects) - 10} more)"
+        logger.warning(
+            "Prescreen rejected %d/%d candidates as NB2-unfoldable: %s",
+            len(prescreen_rejects), len(sequences), sample,
+        )
+    if not foldable:
+        logger.warning(
+            "All %d sequences prescreen-rejected; skipping TNP entirely.",
+            len(sequences),
+        )
+        return {}
+    # From here on, treat the prescreened-down list as the input. Caller
+    # already tracks the original IDs; missing ones get skipped_no_tnp.
+    sequences = foldable
 
     # Slurm-array isolation: under array jobs, multiple tasks share the
     # same output_dir and race on TNP's internal mkdir("Raw_Model_Outputs").
@@ -351,38 +342,19 @@ def run_tnp_batch(
         len(sequences),
     )
 
-    # Retry pass: for every candidate the batch failed to return, rerun
-    # TNP in single-sequence mode. This (a) captures per-sequence stderr
-    # that batch mode drops on the floor and (b) recovers candidates
-    # when the failure was a TNP-internal batch interaction rather than
-    # a genuine NB2 refusal. Bounded extra wall-time:
-    # ~10-30s × n_missing per chunk.
+    # Log explicit missing IDs (NB2 refused to fold these — per-seq TNP
+    # logs in output_dir confirm "ImmuneBuilder was unable to generate a
+    # model"). Single-sequence retry was tried and confirmed to also
+    # hit the same NB2 refusal — see docs/tnp_skip_investigation.md.
     missing_ids = [s["id"] for s in sequences if s["id"] not in results]
     if missing_ids:
         sample = ", ".join(missing_ids[:15])
         if len(missing_ids) > 15:
             sample += f" … (+{len(missing_ids) - 15} more)"
         logger.warning(
-            "TNP batch missed %d/%d candidates; retrying individually. Missing: %s",
+            "TNP did not return results for %d/%d sent candidates "
+            "(NB2 fold refusal — these will receive skipped_no_tnp): %s",
             len(missing_ids), len(sequences), sample,
-        )
-        seq_by_id = {s["id"]: s["sequence"] for s in sequences}
-        retry_dir = output_dir / "retry"
-        retry_dir.mkdir(parents=True, exist_ok=True)
-        recovered = 0
-        for seq_id in missing_ids:
-            single, single_stderr = _run_tnp_single(
-                seq_id, seq_by_id[seq_id], retry_dir, ncores=1,
-            )
-            if single is not None:
-                results[seq_id] = single
-                recovered += 1
-                logger.info("  retry %s: recovered", seq_id)
-            else:
-                logger.warning("  retry %s: TNP refused — %s", seq_id, single_stderr)
-        logger.info(
-            "Retry pass: recovered %d/%d previously-missing candidates.",
-            recovered, len(missing_ids),
         )
 
     return results
