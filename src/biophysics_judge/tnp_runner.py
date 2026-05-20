@@ -73,7 +73,13 @@ def _parse_tnp_json(json_path: Path) -> list[dict]:
         # Check if values are dicts (multi-entry keyed by name)
         first_val = next(iter(data.values()), None)
         if isinstance(first_val, dict):
-            return list(data.values())
+            # Preserve the dict key as "name" inside each value so the
+            # downstream consumer can map results back to candidate IDs.
+            # Some TNP builds embed "name" in the value; others only use
+            # it as the dict key.
+            return [
+                {**v, "name": v.get("name") or k} for k, v in data.items()
+            ]
         # Single sequence result (flat dict with "PSH", "PPC", etc.)
         return [data]
     return []
@@ -97,6 +103,73 @@ def _find_tnp_json(output_dir: Path) -> Path | None:
         return singles[0]
 
     return None
+
+
+def _run_tnp_single(
+    seq_id: str,
+    sequence: str,
+    parent_dir: Path,
+    ncores: int = 1,
+) -> tuple[Optional[TNPResult], str]:
+    """Run TNP on a single sequence in an isolated subdirectory.
+
+    Used as a retry pass for candidate IDs the batch run failed to
+    return. Returns ``(result, stderr_capture)``; ``stderr_capture`` is
+    always populated (even on success) so per-sequence fold errors —
+    which TNP otherwise only emits to global stderr — are surfaced to
+    the caller for logging.
+    """
+    subdir = parent_dir / f"retry_{seq_id}"
+    subdir.mkdir(parents=True, exist_ok=True)
+    fasta = subdir / f"{seq_id}.fasta"
+    with open(fasta, "w") as f:
+        f.write(f">{seq_id}\n{sequence}\n")
+
+    cmd = [
+        "TNP",
+        "--file", str(fasta.resolve()),
+        "--output", str(subdir.resolve()),
+        "--ncores", str(ncores),
+        "--name", f"retry_{seq_id}",
+        "--web",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, cwd=subdir,
+        )
+    except FileNotFoundError:
+        return None, "TNP executable not found"
+
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return None, f"exit={proc.returncode}; stderr: {stderr[:800]}"
+
+    json_path = _find_tnp_json(subdir)
+    if json_path is None:
+        files = sorted(p.name for p in subdir.iterdir() if p.is_file())[:20]
+        return None, f"no JSON output; files: {files}; stderr: {stderr[:500]}"
+
+    raw_results = _parse_tnp_json(json_path)
+    pdb_dir = subdir / "Final_Models"
+    for entry in raw_results:
+        name = entry.get("name") or seq_id
+        pdb_path = pdb_dir / f"{name}.pdb"
+        resolved_pdb = str(pdb_path) if pdb_path.exists() else None
+        try:
+            return TNPResult(
+                psh=float(entry["PSH"]),
+                ppc=float(entry["PPC"]),
+                pnc=float(entry["PNC"]),
+                compactness=float(entry["CDR3 Compactness"]),
+                cdr_length=int(entry["Total CDR Length"]),
+                cdr3_length=int(entry["CDR3 Length"]),
+                pdb_path=resolved_pdb,
+                flags=entry.get("Flags"),
+            ), stderr
+        except (KeyError, ValueError, TypeError) as e:
+            return None, f"parse error: {e}; stderr: {stderr[:500]}"
+
+    return None, f"no entries in JSON; stderr: {stderr[:500]}"
 
 
 def run_tnp_batch(
@@ -205,6 +278,15 @@ def run_tnp_batch(
             check=True,
             cwd=output_dir,  # keep Raw_Model_Outputs/ and other TNP scratch inside output_dir
         )
+        # TNP can exit 0 while still printing per-sequence "couldn't fold"
+        # messages to stderr — surface them at WARNING so they don't get
+        # lost. (Was the silent diagnostic hole behind half the 2026-05-19
+        # canary's skipped_no_tnp verdicts.)
+        if result.stderr and result.stderr.strip():
+            logger.warning(
+                "TNP stderr (exit 0, may include per-seq errors):\n%s",
+                result.stderr,
+            )
         logger.debug("TNP stdout:\n%s", result.stdout)
     except subprocess.CalledProcessError as e:
         logger.error("TNP failed (exit code %d):\n%s", e.returncode, e.stderr)
@@ -228,7 +310,11 @@ def run_tnp_batch(
     # Parse results
     json_path = _find_tnp_json(output_dir)
     if json_path is None:
-        logger.error("No TNP JSON output found in %s", output_dir)
+        on_disk = sorted(p.name for p in output_dir.iterdir() if p.is_file())[:30]
+        logger.error(
+            "No TNP JSON output found in %s. Files present: %s",
+            output_dir, on_disk,
+        )
         return {}
 
     raw_results = _parse_tnp_json(json_path)
@@ -264,5 +350,39 @@ def run_tnp_batch(
         len(results),
         len(sequences),
     )
+
+    # Retry pass: for every candidate the batch failed to return, rerun
+    # TNP in single-sequence mode. This (a) captures per-sequence stderr
+    # that batch mode drops on the floor and (b) recovers candidates
+    # when the failure was a TNP-internal batch interaction rather than
+    # a genuine NB2 refusal. Bounded extra wall-time:
+    # ~10-30s × n_missing per chunk.
+    missing_ids = [s["id"] for s in sequences if s["id"] not in results]
+    if missing_ids:
+        sample = ", ".join(missing_ids[:15])
+        if len(missing_ids) > 15:
+            sample += f" … (+{len(missing_ids) - 15} more)"
+        logger.warning(
+            "TNP batch missed %d/%d candidates; retrying individually. Missing: %s",
+            len(missing_ids), len(sequences), sample,
+        )
+        seq_by_id = {s["id"]: s["sequence"] for s in sequences}
+        retry_dir = output_dir / "retry"
+        retry_dir.mkdir(parents=True, exist_ok=True)
+        recovered = 0
+        for seq_id in missing_ids:
+            single, single_stderr = _run_tnp_single(
+                seq_id, seq_by_id[seq_id], retry_dir, ncores=1,
+            )
+            if single is not None:
+                results[seq_id] = single
+                recovered += 1
+                logger.info("  retry %s: recovered", seq_id)
+            else:
+                logger.warning("  retry %s: TNP refused — %s", seq_id, single_stderr)
+        logger.info(
+            "Retry pass: recovered %d/%d previously-missing candidates.",
+            recovered, len(missing_ids),
+        )
 
     return results
