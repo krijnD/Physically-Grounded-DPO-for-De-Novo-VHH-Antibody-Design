@@ -29,7 +29,7 @@ import warnings
 from pathlib import Path
 
 from Bio import BiopythonWarning
-from Bio.PDB import PDBIO, PDBParser, Select
+from Bio.PDB import PDBParser
 
 logger = logging.getLogger(__name__)
 
@@ -41,27 +41,6 @@ _THREE_TO_ONE = {
 }
 
 
-class _VHHMonomerSelect(Select):
-    """Biopython selector: keep one chain, ATOM records only,
-    no hydrogens, single altloc."""
-
-    def __init__(self, source_chain_id: str):
-        self._source_chain_id = source_chain_id
-
-    def accept_chain(self, chain) -> bool:
-        return chain.id == self._source_chain_id
-
-    def accept_residue(self, residue) -> bool:
-        # hetflag is " " for ATOM records, "H_*" for HETATM, "W" for water
-        return residue.id[0] == " "
-
-    def accept_atom(self, atom) -> bool:
-        if atom.element == "H":
-            return False
-        altloc = atom.get_altloc()
-        return altloc in ("", "A")
-
-
 def extract_vhh_monomer(
     complex_pdb_path: str | Path,
     source_chain_id: str,
@@ -70,60 +49,69 @@ def extract_vhh_monomer(
 ) -> Path:
     """Write a single-chain VHH PDB extracted from a complex PDB.
 
+    Implemented as a column-precise text rewrite — Biopython's
+    PDBIO+Select doesn't play well with in-place chain renames, so we
+    avoid the tree entirely. Reads the source PDB line-by-line, keeps
+    only ATOM records whose chain id matches ``source_chain_id``,
+    drops hydrogens / HETATM / non-A altlocs, and rewrites the chain id
+    column to ``target_chain_id`` (defaults to "H" because TNP's
+    ``CreateAnnotation`` hardcodes "H").
+
     Args:
         complex_pdb_path: Source PDB (typically a DiffAb-generated
             VHH+antigen complex, or a crystal complex).
         source_chain_id: Chain id of the VHH in the source PDB.
         output_path: Destination PDB path. Parent dir is created.
-        target_chain_id: Chain id to assign in the output PDB. Defaults
-            to "H" because TNP's ``CreateAnnotation`` hardcodes "H".
+        target_chain_id: Chain id to assign in the output PDB.
 
     Returns:
         ``output_path`` as a Path.
+
+    Raises:
+        ValueError: if no ATOM records for ``source_chain_id`` are found.
     """
     complex_pdb_path = Path(complex_pdb_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", BiopythonWarning)
-        parser = PDBParser(QUIET=True)
-        structure = parser.get_structure("complex", str(complex_pdb_path))
+    if len(target_chain_id) != 1:
+        raise ValueError(f"target_chain_id must be a single char, got {target_chain_id!r}")
 
-    model = next(structure.get_models())
-    available = [c.id for c in model.get_chains()]
-    if source_chain_id not in available:
+    n_written = 0
+    with open(complex_pdb_path) as fin, open(output_path, "w") as fout:
+        for line in fin:
+            if not line.startswith("ATOM"):
+                # Drop everything that isn't ATOM: HEADER/TITLE we don't
+                # need, HETATM (waters/ligands) we never want, TER lines
+                # that reference dropped residues, MODEL/ENDMDL boundaries
+                # that confuse a single-chain output.
+                continue
+            if len(line) < 22:
+                continue
+            chain_col = line[21]
+            if chain_col != source_chain_id:
+                continue
+            # Drop hydrogens. PDB element column is cols 77-78 (0-idx 76:78).
+            # If absent or whitespace, infer from atom-name col 13-14
+            # (0-idx 12:14): hydrogens start with " H" or "1H"/"2H".
+            element = line[76:78].strip() if len(line) >= 78 else ""
+            atom_name = line[12:16].strip()
+            if element == "H" or (not element and atom_name.startswith("H")):
+                continue
+            # Drop non-blank, non-A altlocs (col 17, 0-idx 16).
+            altloc = line[16] if len(line) > 16 else " "
+            if altloc not in (" ", "A"):
+                continue
+            # Rewrite chain id column to target.
+            fout.write(line[:21] + target_chain_id + line[22:])
+            n_written += 1
+        fout.write("END\n")
+
+    if n_written == 0:
         raise ValueError(
-            f"Chain {source_chain_id!r} not found in {complex_pdb_path}. "
-            f"Available chains: {available}"
+            f"No ATOM records for chain {source_chain_id!r} in {complex_pdb_path}. "
+            f"Check that the chain id is correct."
         )
-
-    if source_chain_id != target_chain_id:
-        # Rename the source chain to the target id. If a chain already
-        # exists at the target id (e.g. an antigen named "H"), rename
-        # it to a free letter so we don't collide before applying Select.
-        existing_target = next(
-            (c for c in model.get_chains() if c.id == target_chain_id), None,
-        )
-        if existing_target is not None and existing_target.id != source_chain_id:
-            free = next(
-                (
-                    letter for letter in "ZYXWVUTSRQPONMLKJI"
-                    if letter not in available
-                ),
-                None,
-            )
-            if free is None:
-                raise ValueError(
-                    f"Cannot relabel chain {target_chain_id!r} — all fallback "
-                    f"letters in use ({available})."
-                )
-            existing_target.id = free
-        model[source_chain_id].id = target_chain_id
-
-    io = PDBIO()
-    io.set_structure(structure)
-    io.save(str(output_path), _VHHMonomerSelect(target_chain_id))
     return output_path
 
 
