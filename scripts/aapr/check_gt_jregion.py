@@ -32,7 +32,6 @@ To check all test-split GTs (not just the 14 failing)::
 from __future__ import annotations
 
 import argparse
-import csv
 import re
 import sys
 from pathlib import Path
@@ -65,27 +64,25 @@ ANCHOR_RE = re.compile(r"WG[A-Z]G[A-Z]{1,4}VTV", re.IGNORECASE)
 STRICT_ANCHOR_RE = re.compile(r"WG[QH]GT[QHP]VTVSS", re.IGNORECASE)
 
 
-def load_hchain_map(manifest_path: Path) -> dict[str, str]:
-    """Return {pdb_id: Hchain} from the DiffAb manifest TSV."""
-    out: dict[str, str] = {}
-    with open(manifest_path) as f:
-        for row in csv.DictReader(f, delimiter="\t"):
-            out[row["pdb"]] = row.get("Hchain", "")
-    return out
+def heavy_seq_from_structure(struct: dict) -> tuple[str, int, int]:
+    """Extract heavy-chain 1-letter sequence + (min_resseq, max_resseq).
 
-
-def heavy_seq_from_structure(struct: dict, hchain: str) -> str:
-    """Extract the heavy-chain 1-letter sequence from a get_structure() dict."""
-    chain_ids = struct["chain_id"]
-    aa = struct["aa"]
-    # aa may be torch.Tensor or list; tolerate both.
+    The raw LMDB structure is the dict returned by
+    ``preprocess_sabdab_structure``: keys ``heavy``, ``heavy_seqmap``,
+    ``light``, ``antigen``, etc. The heavy sub-dict has ``chain_id``,
+    ``resseq``, ``aa``, ``pos_heavyatom``. The Hchain manifest filter
+    is unnecessary here because ``parsed['heavy']`` is already
+    heavy-only (the parser was given only ``model[H_chain]``).
+    """
+    heavy = struct["heavy"]
+    if heavy is None:
+        raise ValueError("structure has no 'heavy' sub-dict")
+    aa = heavy["aa"]
+    resseq = heavy["resseq"]
     aa_iter = aa.tolist() if hasattr(aa, "tolist") else list(aa)
-    chars = [
-        Polypeptide.index_to_one(int(a))
-        for a, c in zip(aa_iter, chain_ids)
-        if c == hchain
-    ]
-    return "".join(chars)
+    resseq_iter = resseq.tolist() if hasattr(resseq, "tolist") else list(resseq)
+    chars = [Polypeptide.index_to_one(int(a)) for a in aa_iter]
+    return "".join(chars), min(resseq_iter), max(resseq_iter)
 
 
 def classify(seq: str) -> str:
@@ -112,10 +109,6 @@ def main() -> int:
         "--all", action="store_true",
         help="Check every GT in the split, not just the 14 known-failing ones.",
     )
-    parser.add_argument(
-        "--manifest", default="data/datasets/diffab_manifest.tsv",
-        help="Manifest TSV with Hchain column.",
-    )
     args = parser.parse_args()
 
     config, _ = load_config(args.config)
@@ -125,13 +118,11 @@ def main() -> int:
     ds_block.transform = None
     dataset = get_dataset(ds_block)
 
-    hchain_map = load_hchain_map(PROJECT_ROOT / args.manifest)
-
     targets = list(dataset.ids_in_split) if args.all else FAILING_GTS
 
     print(f"Checking {len(targets)} GTs (split={args.split})")
-    print(f"{'GT':<10} {'len':>4}  verdict           C-terminal (last 25)")
-    print("-" * 80)
+    print(f"{'GT':<10} {'len':>4}  {'resseq':<11}  verdict           C-terminal (last 25)")
+    print("-" * 95)
 
     counts = {"FULL_ANCHOR": 0, "ATYPICAL_ANCHOR": 0, "TRUNCATED": 0,
               "MISSING_FROM_SPLIT": 0, "ERROR": 0}
@@ -142,22 +133,17 @@ def main() -> int:
             counts["MISSING_FROM_SPLIT"] += 1
             continue
         try:
-            pdb_id = gt_id.split("_", 1)[0]
-            hchain = hchain_map.get(pdb_id, "")
-            if not hchain:
-                print(f"{gt_id:<10}  -    NO_HCHAIN_IN_MANIFEST")
-                counts["ERROR"] += 1
-                continue
             struct = dataset.get_structure(gt_id)
-            seq = heavy_seq_from_structure(struct, hchain)
+            seq, min_rs, max_rs = heavy_seq_from_structure(struct)
             verdict = classify(seq)
             counts[verdict] += 1
-            print(f"{gt_id:<10} {len(seq):>4}  {verdict:<16}  ...{seq[-25:]}")
+            resseq_range = f"{min_rs}-{max_rs}"
+            print(f"{gt_id:<10} {len(seq):>4}  {resseq_range:<11}  {verdict:<16}  ...{seq[-25:]}")
         except Exception as exc:  # noqa: BLE001
-            print(f"{gt_id:<10}  -    ERROR  ({exc.__class__.__name__}: {exc})")
+            print(f"{gt_id:<10}  -    -            ERROR  ({exc.__class__.__name__}: {exc})")
             counts["ERROR"] += 1
 
-    print("-" * 80)
+    print("-" * 95)
     print("Summary:")
     for k, v in counts.items():
         if v:
