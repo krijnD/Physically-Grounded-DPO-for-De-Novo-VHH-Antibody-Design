@@ -2,13 +2,16 @@
 
 Runs VHH candidate sequences through the multi-judge evaluation:
   Phase 1: 1D sequence annotation + deterministic pre-filter
-  Phase 2: TNP batch (NanoBodyBuilder2 folding + biophysics metrics)
+  Phase 2: Biophysics metrics on the input structure (PSH/PPC/PNC/Compactness)
   Phase 3: Multi-judge evaluation (Biology, Biophysics, Physics)
 
-TNP serves as both the folder and the biophysics analyzer, enforcing
-the "Fold Once, Judge Many" architecture.  The PDB structures it
-generates are shared with the Biology Judge (SAP) and Physics Judge
-(Rosetta, future).
+Candidates enter the pipeline with their structure already provided
+(``complex_pdb_path``) — typically a DiffAb-generated VHH+antigen
+complex or a crystal complex. Phase 2 extracts the VHH chain into a
+clean monomer PDB and scores it with TNP's metric functions via
+``tnp_direct``; the same monomer is then re-used by the Biology Judge
+(localized SAP), enforcing the "score one geometry, judge many" idea
+without re-folding.
 
 Judge independence
 ------------------
@@ -17,7 +20,7 @@ failure in one judge does NOT gate any other judge — ``is_valid`` is
 a pure aggregate label built from individual verdicts, used downstream
 for hard-negative DPO pair construction. The only legitimate skip is
 "required input missing" (no antigen → physics skipped;
-non-parseable sequence → TNP can't fold → biophysics skipped). In
+no structure / ANARCI parse failure → biophysics skipped). In
 those cases the judge emits an explicit ``skipped_*`` verdict rather
 than silent None.
 
@@ -32,11 +35,10 @@ from pathlib import Path
 import pandas as pd
 
 from src.common.candidate import NanobodyCandidate
-from src.common.config import Config
 from src.common.pdb_utils import load_structure
 from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
-from src.biophysics_judge.tnp_runner import run_tnp_batch
+from src.biophysics_judge.tnp_direct import score_pdb as score_biophysics_pdb
 from src.biophysics_judge.judge import BiophysicsJudge
 from src.physics_judge.judge import PhysicsJudge
 
@@ -51,16 +53,17 @@ def run_pipeline(
     sequences: list[dict[str, str]],
     structures_dir: Path = STRUCTURES_DIR,
     results_dir: Path = RESULTS_DIR,
-    tnp_ncores: int = Config.TNP_NCORES,
 ) -> pd.DataFrame:
     """Run the full evaluation pipeline on a list of sequences.
 
     Args:
         sequences: List of dicts with keys "candidate_id" and "raw_sequence".
-                   Optionally "pdb_filepath" if the structure is pre-folded.
+                   Must include "complex_pdb_path" and "nanobody_chain_id"
+                   so Phase 2 can score the structure directly. Candidates
+                   without a structure receive ``skipped_no_structure`` /
+                   ``skipped_no_tnp`` verdicts.
         structures_dir: Directory where PDB files are stored/expected.
         results_dir: Directory where the output Parquet will be written.
-        tnp_ncores: Number of CPU cores for TNP to use.
 
     Returns:
         DataFrame with one row per candidate and all judge verdicts.
@@ -81,41 +84,46 @@ def run_pipeline(
         annotate_and_filter(candidate)
         candidates.append(candidate)
 
-    # Phase 1 parseable candidates are the ones TNP can fold.  Unparseable
-    # sequences (ANARCI fail_absolute) still proceed to Phase 3 — they just
-    # get "skipped_unannotated" / "skipped_no_tnp" verdicts from downstream
-    # judges, so every candidate still has a complete row in the output.
-    foldable = [
+    # ANARCI-parseable candidates are the ones TNP's metric functions
+    # can score (compactness uses ANARCI on the structure too).
+    # Unparseable sequences still proceed to Phase 3 — they get
+    # ``skipped_*`` verdicts so every candidate has a complete output row.
+    scoreable = [
         c for c in candidates if c.biology_verdict != "fail_absolute"
     ]
     logger.info(
-        "Phase 1 complete: %d/%d candidates proceed to folding "
+        "Phase 1 complete: %d/%d candidates proceed to biophysics scoring "
         "(remaining %d will receive skipped verdicts).",
-        len(foldable),
+        len(scoreable),
         len(candidates),
-        len(candidates) - len(foldable),
+        len(candidates) - len(scoreable),
     )
 
-    # ── Phase 2: TNP Batch (fold + biophysics metrics) ──
-    if foldable:
-        tnp_output_dir = results_dir / "tnp_output"
-        tnp_results = run_tnp_batch(
-            sequences=[
-                {"id": c.candidate_id, "sequence": c.raw_sequence}
-                for c in foldable
-            ],
-            output_dir=tnp_output_dir,
-            ncores=tnp_ncores,
-        )
-
-        # Populate candidates with TNP results.  If TNP produced nothing
-        # for a candidate, its metrics stay None — the Biophysics Judge
-        # will emit "skipped_no_tnp" for that row.
-        for candidate in foldable:
-            result = tnp_results.get(candidate.candidate_id)
-            if result is None:
+    # ── Phase 2: Biophysics scoring on the provided structure ──
+    # Direct call into theraprofnano on the DiffAb / crystal complex's
+    # VHH chain — no NB2 re-fold. The extracted monomer PDB is stored
+    # on the candidate so Biology can SAP the same coordinates.
+    if scoreable:
+        monomer_dir = results_dir / "vhh_monomers"
+        for candidate in scoreable:
+            if not candidate.complex_pdb_path:
                 logger.warning(
-                    "Candidate %s: TNP produced no result — "
+                    "Candidate %s: no complex_pdb_path — "
+                    "biophysics/biology will report skipped verdicts.",
+                    candidate.candidate_id,
+                )
+                continue
+            try:
+                result = score_biophysics_pdb(
+                    complex_pdb_path=candidate.complex_pdb_path,
+                    nanobody_chain_id=candidate.nanobody_chain_id or "H",
+                    candidate_id=candidate.candidate_id,
+                    sequence=candidate.raw_sequence,
+                    output_dir=monomer_dir,
+                )
+            except Exception:
+                logger.exception(
+                    "Candidate %s: biophysics scoring failed — "
                     "biophysics/biology will report skipped verdicts.",
                     candidate.candidate_id,
                 )
@@ -127,10 +135,8 @@ def run_pipeline(
             candidate.compactness = result.compactness
             candidate.cdr_length = result.cdr_length
             candidate.cdr3_length = result.cdr3_length
-
-            # Use TNP-generated PDB (prefer over any pre-existing path)
-            if result.pdb_path:
-                candidate.pdb_filepath = result.pdb_path
+            # Use the extracted VHH monomer for Biology Judge SAP.
+            candidate.pdb_filepath = result.pdb_path
 
     # ── Phase 3: Multi-Judge Evaluation (every judge, every candidate) ──
     biology_judge = BiologyJudge()

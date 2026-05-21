@@ -77,8 +77,6 @@ class Config:
     PPC_MAX: float = 0.39   # Clinical PK constraint, not natural-VHH prevalence
     COMPACTNESS_LOW: float = 0.81
     COMPACTNESS_HIGH: float = 1.57
-    # TNP runtime
-    TNP_NCORES: int = 1
 
     # ── Physics Judge (Rosetta, AbDPO-style residue-level CDR energy) ──
     # Mean Rosetta total energy across CDR residues (REU/residue), per

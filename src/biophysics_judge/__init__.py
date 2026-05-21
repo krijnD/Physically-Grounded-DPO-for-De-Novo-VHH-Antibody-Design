@@ -1,4 +1,4 @@
 from .judge import BiophysicsJudge
-from .tnp_runner import run_tnp_batch, TNPResult
+from .tnp_direct import TNPResult, score_pdb
 
-__all__ = ["BiophysicsJudge", "run_tnp_batch", "TNPResult"]
+__all__ = ["BiophysicsJudge", "TNPResult", "score_pdb"]

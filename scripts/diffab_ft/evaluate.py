@@ -25,12 +25,11 @@ Two evaluation modes — pick via ``--mode``:
 
 What is *not* in here (deliberate scope cut)
 --------------------------------------------
-  * sc-RMSD via NanoBodyBuilder2 fold-back — handled by the existing
-    ``src/biophysics_judge/tnp_runner.py``; call it on the saved PDBs
-    that ``--mode design`` writes (see ``--save-pdbs``).
   * Judge-pipeline pass rates — the entry points in
     ``src/{biology,biophysics,physics}_judge/judge.py`` consume the
-    same generated PDBs.
+    PDBs ``--mode design`` writes (see ``--save-pdbs``). Biophysics
+    scores the DiffAb structure directly via
+    ``src/biophysics_judge/tnp_direct.py`` — no NB2 fold-back step.
   * NbBench oracle scoring — separate runner; out of scope here.
 
 Both follow-on stages read the per-entry CSV and the saved PDB

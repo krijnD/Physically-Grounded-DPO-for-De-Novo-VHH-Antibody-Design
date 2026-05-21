@@ -4,9 +4,9 @@
 Loads SAbDab entries (nanobody+antigen complex PDBs), extracts sequences,
 and runs Phase 1 (sequence filter) + all three judges directly.
 
-With --run-tnp, also invokes TNP (Therapeutic Nanobody Profiler) to fold
-sequences and compute biophysics metrics (PSH, PPC, PNC, Compactness),
-enabling a full end-to-end sanity test of all judges including Biophysics.
+With --score-biophysics, also runs theraprofnano metric functions (PSH,
+PPC, PNC, Compactness) directly on the VHH chain of each input PDB —
+no NanoBodyBuilder2 re-folding involved.
 
 Usage on Snellius:
     # Quick test (biology + physics only):
@@ -16,12 +16,12 @@ Usage on Snellius:
         --output data/results/sabdab_judge_test.parquet \
         --limit 5
 
-    # Full test (all judges incl. biophysics via TNP):
+    # Full test (all judges including biophysics):
     python scripts/test_sabdab_judges.py \
         --tsv /projects/0/hpmlprjs/interns/krijn/sabdab_nano_dataset_IgLM/sabdab_nano_summary.tsv \
         --pdb-dir /projects/0/hpmlprjs/interns/krijn/sabdab_nano_dataset_IgLM/filtered_vhh_pdbs \
         --output data/results/sabdab_judge_test.parquet \
-        --run-tnp --ncores 4
+        --score-biophysics
 """
 
 import argparse
@@ -44,7 +44,7 @@ from src.common.sabdab_loader import (
 from src.biology_judge.sequence_filter import annotate_and_filter
 from src.biology_judge.judge import BiologyJudge
 from src.biophysics_judge.judge import BiophysicsJudge
-from src.biophysics_judge.tnp_runner import run_tnp_batch
+from src.biophysics_judge.tnp_direct import score_pdb as score_biophysics_pdb
 from src.physics_judge.judge import PhysicsJudge
 
 logging.basicConfig(
@@ -130,17 +130,13 @@ def main():
         help="Process only the first N entries (for quick testing)",
     )
     parser.add_argument(
-        "--run-tnp",
+        "--score-biophysics",
+        "--run-tnp",  # back-compat alias
         action="store_true",
         default=False,
-        help="Run TNP folding to compute biophysics metrics (PSH, PPC, Compactness). "
-             "Without this flag the Biophysics Judge is skipped.",
-    )
-    parser.add_argument(
-        "--ncores",
-        type=int,
-        default=1,
-        help="Number of CPU cores for TNP folding (default: 1)",
+        help="Score biophysics metrics (PSH, PPC, PNC, Compactness) directly "
+             "on each PDB's VHH chain via theraprofnano. Without this flag "
+             "the Biophysics Judge emits skipped_no_tnp.",
     )
     parser.add_argument(
         "--refinement-mode",
@@ -237,56 +233,65 @@ def main():
         "Phase 1 complete: %d/%d proceed.", len(phase1_survivors), total
     )
 
-    # ── Phase 2 (optional): TNP folding + biophysics metrics ──
-    if args.run_tnp and phase1_survivors:
+    # ── Phase 2 (optional): theraprofnano biophysics scoring ──
+    # Scores the VHH chain of each input PDB directly (no NB2 re-fold).
+    # Sets candidate.pdb_filepath to the extracted monomer so the
+    # Biology Judge SAPs the same coordinates the biophysics metrics
+    # were computed on.
+    if args.score_biophysics and phase1_survivors:
         logger.info("=" * 60)
         logger.info(
-            "PHASE 2: TNP folding (%d sequences, ncores=%d)",
-            len(phase1_survivors), args.ncores,
+            "PHASE 2: theraprofnano scoring (%d candidates)",
+            len(phase1_survivors),
         )
         logger.info("=" * 60)
-        logger.info("  Running TNP batch — this may take a while ...")
-        tnp_start = time.time()
+        score_start = time.time()
+        monomer_dir = output_path.parent / "vhh_monomers"
 
-        tnp_output_dir = output_path.parent / "tnp_sabdab_output"
-        tnp_results = run_tnp_batch(
-            sequences=[
-                {"id": c.candidate_id, "sequence": c.raw_sequence}
-                for c in phase1_survivors
-            ],
-            output_dir=tnp_output_dir,
-            ncores=args.ncores,
-        )
-
-        # Populate candidates with TNP metrics (but keep SAbDab PDB for
-        # biology/physics — we want to judge the real crystal structure)
-        tnp_matched = 0
+        n_scored = 0
         for candidate in phase1_survivors:
-            result = tnp_results.get(candidate.candidate_id)
-            if result is None:
+            source_pdb = candidate.complex_pdb_path or candidate.pdb_filepath
+            if not source_pdb:
                 logger.warning(
-                    "  %s: TNP produced no result.", candidate.candidate_id
+                    "  %s: no PDB on candidate — skipping.",
+                    candidate.candidate_id,
                 )
                 continue
+            try:
+                result = score_biophysics_pdb(
+                    complex_pdb_path=source_pdb,
+                    nanobody_chain_id=candidate.nanobody_chain_id or "H",
+                    candidate_id=candidate.candidate_id,
+                    sequence=candidate.raw_sequence,
+                    output_dir=monomer_dir,
+                )
+            except Exception:
+                logger.exception(
+                    "  %s: biophysics scoring failed.",
+                    candidate.candidate_id,
+                )
+                continue
+
             candidate.psh_score = result.psh
             candidate.ppc_score = result.ppc
             candidate.pnc_score = result.pnc
             candidate.compactness = result.compactness
             candidate.cdr_length = result.cdr_length
             candidate.cdr3_length = result.cdr3_length
-            tnp_matched += 1
-            # NOTE: intentionally NOT overriding pdb_filepath — we use the
-            # real SAbDab crystal structure for biology/physics judges.
+            # Re-point Biology Judge at the extracted monomer.
+            candidate.pdb_filepath = result.pdb_path
+            n_scored += 1
 
-        tnp_elapsed = time.time() - tnp_start
+        score_elapsed = time.time() - score_start
         logger.info(
-            "  TNP complete: %d/%d sequences profiled in %.0fs (%.1fs/seq).",
-            tnp_matched, len(phase1_survivors), tnp_elapsed,
-            tnp_elapsed / max(len(phase1_survivors), 1),
+            "  Biophysics scoring complete: %d/%d in %.0fs (%.1fs/cand).",
+            n_scored, len(phase1_survivors), score_elapsed,
+            score_elapsed / max(len(phase1_survivors), 1),
         )
-    elif not args.run_tnp:
+    elif not args.score_biophysics:
         logger.info(
-            "Skipping TNP folding (use --run-tnp to enable Biophysics Judge)."
+            "Skipping biophysics scoring "
+            "(use --score-biophysics to enable Biophysics Judge)."
         )
 
     # ── Phase 3: Multi-judge evaluation ──
@@ -388,8 +393,10 @@ def main():
     # Biophysics
     bp_verdicts = df["biophysics_verdict"].value_counts(dropna=False)
     logger.info("Biophysics verdicts: %s", dict(bp_verdicts))
-    if not args.run_tnp:
-        logger.info("  (Biophysics skipped — rerun with --run-tnp for full test)")
+    if not args.score_biophysics:
+        logger.info(
+            "  (Biophysics skipped — rerun with --score-biophysics for full test)"
+        )
 
     # Physics Judge
     phys_verdicts = df["physics_verdict"].value_counts(dropna=False)
