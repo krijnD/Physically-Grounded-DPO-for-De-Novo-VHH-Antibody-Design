@@ -71,10 +71,15 @@ import datetime
 import json
 import logging
 import os
+import pickle
 from pathlib import Path
 from typing import Iterable
 
+import joblib
+import lmdb
 import pandas as pd
+from Bio import PDB
+from Bio.PDB import PDBExceptions
 from tqdm.auto import tqdm
 
 # DiffAb imports — these require third_party/diffab on sys.path. The
@@ -84,11 +89,13 @@ from diffab.datasets._base import register_dataset
 from diffab.datasets.sabdab import (
     ALLOWED_AG_TYPES,
     SAbDabDataset,
+    _label_heavy_chain_cdr,
     nan_to_empty_string,
     nan_to_none,
     parse_sabdab_resolution,
     split_sabdab_delimited_str,
 )
+from diffab.utils.protein import parsers
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +113,107 @@ def _entry_id(pdb: str, h_chain: str) -> str:
     return f"{str(pdb).strip().lower()}_{str(h_chain).strip()}"
 
 
+# Default cap for the heavy-chain parser. The upstream DiffAb default of
+# 113 was designed for Chothia-numbered SAbDab antibody PDBs (where
+# Chothia 113 = last residue of the canonical J-anchor ``WGQGTQVTVSS``).
+# Our VHH PDBs come straight from RCSB and many use sequential or
+# author numbering — for those, the 113-cap silently truncates the
+# J-anchor (sometimes mid-CDR3), which causes downstream NanoBodyBuilder2
+# folding to refuse the resulting sequences. Raising the cap to 150
+# covers any reasonable VHH length while remaining well below the
+# next-chain boundary in multi-chain PDBs (chains are passed in
+# separately, so this just gates resseq within a single chain).
+# Investigation in docs/aapr_masking_research_context.md.
+DEFAULT_HEAVY_MAX_RESSEQ = 150
+
+
+def _preprocess_vhh_structure(task, heavy_max_resseq: int = DEFAULT_HEAVY_MAX_RESSEQ):
+    """VHH-aware reimplementation of DiffAb's ``preprocess_sabdab_structure``.
+
+    Identical to the upstream function except:
+      * The heavy-chain ``max_resseq`` is configurable (default
+        ``DEFAULT_HEAVY_MAX_RESSEQ``) instead of hardcoded to 113.
+      * The light-chain branch is preserved for parity but is dead code
+        for our VHH dataset (``L_chain`` is always ``None``).
+
+    Returns the same dict shape as the upstream:
+    ``{id, heavy, heavy_seqmap, light, light_seqmap, antigen, antigen_seqmap}``
+    or ``None`` if parsing failed (matches upstream error semantics so
+    ``_load_structures``' filter logic keeps working).
+    """
+    entry = task["entry"]
+    pdb_path = task["pdb_path"]
+
+    parser = PDB.PDBParser(QUIET=True)
+    model = parser.get_structure(id, pdb_path)[0]
+
+    parsed = {
+        "id": entry["id"],
+        "heavy": None,
+        "heavy_seqmap": None,
+        "light": None,
+        "light_seqmap": None,
+        "antigen": None,
+        "antigen_seqmap": None,
+    }
+    try:
+        if entry["H_chain"] is not None:
+            (
+                parsed["heavy"],
+                parsed["heavy_seqmap"],
+            ) = _label_heavy_chain_cdr(*parsers.parse_biopython_structure(
+                model[entry["H_chain"]],
+                max_resseq=heavy_max_resseq,
+            ))
+
+        # Dead branch for VHH (L_chain always None), kept for parity.
+        if entry["L_chain"] is not None:  # pragma: no cover
+            from diffab.datasets.sabdab import _label_light_chain_cdr
+            (
+                parsed["light"],
+                parsed["light_seqmap"],
+            ) = _label_light_chain_cdr(*parsers.parse_biopython_structure(
+                model[entry["L_chain"]],
+                max_resseq=106,
+            ))
+
+        if parsed["heavy"] is None and parsed["light"] is None:
+            raise ValueError("Neither valid H-chain or L-chain is found.")
+
+        if len(entry["ag_chains"]) > 0:
+            chains = [model[c] for c in entry["ag_chains"]]
+            (
+                parsed["antigen"],
+                parsed["antigen_seqmap"],
+            ) = parsers.parse_biopython_structure(chains)
+
+    except (
+        PDBExceptions.PDBConstructionException,
+        parsers.ParsingException,
+        KeyError,
+        ValueError,
+    ) as e:
+        logging.warning("[%s] %s: %s", task["id"], e.__class__.__name__, str(e))
+        return None
+
+    return parsed
+
+
 class VHHANDDDataset(SAbDabDataset):
     """SAbDabDataset subclass that consumes our curated manifest + splits.
 
-    The four ``_load_*`` hooks are overridden; ``_load_structures``,
-    ``__getitem__``, ``get_structure``, and the LMDB plumbing are
-    inherited as-is.
+    Overrides:
+      * ``_load_sabdab_entries`` (relax resolution filter, align entry IDs)
+      * ``_load_clusters``        (read from JSON, no MMseqs2)
+      * ``_load_split``           (JSON splits + antigen-disjoint variant)
+      * ``_preprocess_structures`` (raise heavy-chain ``max_resseq`` cap so
+        the J-anchor isn't silently truncated on sequentially-numbered
+        VHH PDBs — see ``DEFAULT_HEAVY_MAX_RESSEQ`` above)
+
+    ``__getitem__``, ``get_structure``, ``_load_structures`` (the LMDB
+    plumbing on top of ``_preprocess_structures``), and the heavy-atom
+    parsing in :func:`preprocess_sabdab_structure` (mirrored locally as
+    :func:`_preprocess_vhh_structure`) are inherited / borrowed as-is.
     """
 
     def __init__(
@@ -124,9 +226,11 @@ class VHHANDDDataset(SAbDabDataset):
         split_seed: int = 42,
         transform=None,
         reset: bool = False,
+        heavy_max_resseq: int = DEFAULT_HEAVY_MAX_RESSEQ,
     ):
         # Set extras BEFORE calling super().__init__: the parent ctor
         # immediately calls our overridden hooks, which reference these.
+        self.heavy_max_resseq = int(heavy_max_resseq)
         self.splits_path = Path(splits_path)
         if not self.splits_path.exists():
             raise FileNotFoundError(f"splits JSON not found: {self.splits_path}")
@@ -279,6 +383,61 @@ class VHHANDDDataset(SAbDabDataset):
         self.ids_in_split = ids_in_split
         logger.info("Final split %r size: %d", split, len(ids_in_split))
 
+    # ── Override 4: preprocess structures with a larger J-anchor cap ────
+    def _preprocess_structures(self):
+        """Build the LMDB cache with :func:`_preprocess_vhh_structure`.
+
+        Mirrors the upstream ``_preprocess_structures`` exactly except
+        for the call site: it dispatches to our heavy-chain-cap-aware
+        helper instead of the upstream module-level function. Everything
+        else (joblib parallelism, LMDB writer, ids file) is unchanged
+        so the rest of the parent class continues to work.
+        """
+        tasks = []
+        for entry in self.sabdab_entries:
+            pdb_path = os.path.join(
+                self.chothia_dir, "{}.pdb".format(entry["pdbcode"])
+            )
+            if not os.path.exists(pdb_path):
+                logger.warning("PDB not found: %s", pdb_path)
+                continue
+            tasks.append({
+                "id": entry["id"],
+                "entry": entry,
+                "pdb_path": pdb_path,
+            })
+
+        cap = self.heavy_max_resseq
+        logger.info(
+            "Preprocessing %d structures (heavy_max_resseq=%d).",
+            len(tasks), cap,
+        )
+
+        data_list = joblib.Parallel(
+            n_jobs=max(joblib.cpu_count() // 2, 1),
+        )(
+            joblib.delayed(_preprocess_vhh_structure)(task, cap)
+            for task in tqdm(tasks, dynamic_ncols=True, desc="Preprocess")
+        )
+
+        db_conn = lmdb.open(
+            self._structure_cache_path,
+            map_size=self.MAP_SIZE,
+            create=True,
+            subdir=False,
+            readonly=False,
+        )
+        ids = []
+        with db_conn.begin(write=True, buffers=True) as txn:
+            for data in tqdm(data_list, dynamic_ncols=True, desc="Write to LMDB"):
+                if data is None:
+                    continue
+                ids.append(data["id"])
+                txn.put(data["id"].encode("utf-8"), pickle.dumps(data))
+
+        with open(self._structure_cache_path + "-ids", "wb") as f:
+            pickle.dump(ids, f)
+
     # ── Helper: derive the antigen-disjoint held-out test set ──────────
     def _compute_antigen_disjoint_test(self, live_ids: set[str]) -> list[str]:
         """Return the subset of ``test`` whose antigen cluster does not
@@ -343,7 +502,11 @@ class VHHANDDDataset(SAbDabDataset):
 
 @register_dataset("vhh_andd")
 def get_vhh_andd_dataset(cfg, transform):
-    """Registry hook: build a :class:`VHHANDDDataset` from EasyDict cfg."""
+    """Registry hook: build a :class:`VHHANDDDataset` from EasyDict cfg.
+
+    Accepts an optional ``heavy_max_resseq`` field in the YAML to
+    override the default J-anchor cap (see ``DEFAULT_HEAVY_MAX_RESSEQ``).
+    """
     # Path resolution is the caller's responsibility (the trainer
     # already cd's to the project root, so relative paths in the YAML
     # work from there).
@@ -360,4 +523,5 @@ def get_vhh_andd_dataset(cfg, transform):
         split_seed=cfg.get("split_seed", 42),
         transform=transform,
         reset=cfg.get("reset", False),
+        heavy_max_resseq=cfg.get("heavy_max_resseq", DEFAULT_HEAVY_MAX_RESSEQ),
     )
