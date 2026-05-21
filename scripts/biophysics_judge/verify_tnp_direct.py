@@ -115,11 +115,14 @@ def main():
             )
         except Exception as e:
             n_fail += 1
-            logger.warning("[%d/%d] %s — score_pdb FAILED: %s",
-                           idx + 1, len(df), candidate_id, e)
+            logger.warning("[%d/%d] %s — score_pdb FAILED: %s: %r",
+                           idx + 1, len(df), candidate_id,
+                           type(e).__name__, e)
+            if n_fail <= 3:
+                logger.exception("  full traceback for %s:", candidate_id)
             for col in _NEW_COLS:
                 record[col] = None
-            record["new_error"] = str(e)
+            record["new_error"] = f"{type(e).__name__}: {e!r}"
             new_rows.append(record)
             continue
 

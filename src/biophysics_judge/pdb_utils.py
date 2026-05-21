@@ -90,7 +90,7 @@ def extract_vhh_monomer(
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure("complex", str(complex_pdb_path))
 
-    model = structure[0]
+    model = next(structure.get_models())
     available = [c.id for c in model.get_chains()]
     if source_chain_id not in available:
         raise ValueError(
@@ -151,7 +151,7 @@ def renumber_to_imgt(monomer_pdb: str | Path, output_pdb: str | Path) -> Path:
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure("monomer", str(monomer_pdb))
 
-    chain = next(iter(structure[0].get_chains()))
+    chain = next(iter(next(structure.get_models()).get_chains()))
     ordered_residues = [
         res for res in chain
         if res.id[0] == " " and res.get_resname() in _THREE_TO_ONE
