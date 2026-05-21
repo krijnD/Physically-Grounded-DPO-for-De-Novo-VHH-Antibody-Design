@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .pdb_utils import extract_vhh_monomer
+from .pdb_utils import extract_vhh_monomer, renumber_to_imgt
 
 logger = logging.getLogger(__name__)
 
@@ -70,16 +70,22 @@ def score_pdb(
       1. Extract the VHH chain from ``complex_pdb_path`` into a clean
          monomer PDB (no hydrogens, no HETATM, chain id renamed to "H"
          because TNP's CreateAnnotation hardcodes "H").
-      2. Compute CDR lengths (IMGT) from the *sequence* via TNP's
+      2. Renumber the monomer's residues to the IMGT scheme via
+         ``abnumber``. TNP's metric functions look up residues by IMGT
+         number; the source crystal numbering DiffAb inherits does not
+         align with IMGT and would leave ``parse_nb``'s CDR3 anchor
+         list empty.
+      3. Compute CDR lengths (IMGT) from the *sequence* via TNP's
          ``CDR_Assigner.main`` — same source TNP CLI uses.
-      3. Compute rho via TNP's ``main_compactness`` on the monomer PDB.
-         compactness = imgt_cdr3_length / rho  (TNP's corrected formula,
-         per the comment "UPDATED (corrected) 23.08.25" in bin/TNP).
-      4. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
-         monomer PDB.
-      5. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
-         points at the extracted monomer so downstream judges (Biology)
-         can re-use the same coordinates without re-extracting.
+      4. Compute rho via TNP's ``main_compactness`` on the renumbered
+         monomer PDB. compactness = imgt_cdr3_length / rho  (TNP's
+         corrected formula, per "UPDATED (corrected) 23.08.25" in
+         bin/TNP).
+      5. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
+         same renumbered monomer.
+      6. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
+         points at the renumbered monomer so downstream judges
+         (Biology) can re-use the same coordinates.
 
     Args:
         complex_pdb_path: VHH+antigen complex PDB (DiffAb output or
@@ -108,13 +114,15 @@ def score_pdb(
     region_and_aa_dicts, main_compactness, CreateAnnotation = _import_theraprofnano()
 
     output_dir = Path(output_dir)
+    raw_monomer_path = output_dir / f"{candidate_id}.raw.pdb"
     monomer_path = output_dir / f"{candidate_id}.pdb"
     extract_vhh_monomer(
         complex_pdb_path=complex_pdb_path,
         source_chain_id=nanobody_chain_id,
-        output_path=monomer_path,
+        output_path=raw_monomer_path,
         target_chain_id="H",
     )
+    renumber_to_imgt(raw_monomer_path, monomer_path)
 
     # ── CDR lengths (sequence-derived, IMGT) ──
     # region_and_aa_dicts writes intermediate files to a temp dir we
