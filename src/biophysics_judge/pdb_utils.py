@@ -212,49 +212,184 @@ def renumber_to_imgt(monomer_pdb: str | Path, output_pdb: str | Path) -> Path:
     return output_pdb
 
 
-def pack_sidechains(input_pdb: str | Path, output_pdb: str | Path) -> Path:
-    """Place / repack side chains via PyRosetta's fixed-backbone packer.
+# Expected number of heavy atoms per standard amino acid type. A residue
+# with fewer atoms than its entry here is missing side-chain coordinates
+# and needs packing. Includes CB for everything except GLY.
+_EXPECTED_HEAVY_ATOMS: dict[str, int] = {
+    "ALA": 5,  "ARG": 11, "ASN": 8,  "ASP": 8,  "CYS": 6,
+    "GLN": 9,  "GLU": 9,  "GLY": 4,  "HIS": 10, "ILE": 8,
+    "LEU": 8,  "LYS": 9,  "MET": 8,  "PHE": 11, "PRO": 7,
+    "SER": 6,  "THR": 7,  "TRP": 14, "TYR": 12, "VAL": 7,
+}
 
-    DiffAb writes backbone atoms only (N, CA, C, O, CB) for the residues
-    it regenerated (CDRs in the multi-CDR π_ref scope). TNP's surface
-    metrics — especially PSH — read solvent-accessible side-chain
-    surface, so a backbone-only CDR inflates PSH by ~+50 REU vs. a
-    structure with full atoms (validated on the 2026-05-21 seed42_dedup
-    canary).
 
-    This wrapper:
-      1. Loads the input PDB into a Pose; PyRosetta autoplaces missing
-         heavy atoms in idealized positions.
-      2. Runs ``PackRotamersMover`` with ``RestrictToRepacking`` on
-         every residue (single-chain monomer — no antigen to preserve).
-         Framework residues with already-good crystal rotamers usually
-         stay put; CDR residues get sampled into the Dunbrack 2010
-         library and pick a low-energy rotamer.
-      3. Dumps the packed pose, preserving residue numbering /
-         insertion codes (PyRosetta's PDBInfo carries them through).
+def _find_incomplete_residues(
+    pdb_path: Path,
+    chain_id: str | None = None,
+) -> set[tuple[str, int, str, str]]:
+    """Return ``{(chain, resseq, icode, resname)}`` for residues with
+    fewer heavy atoms than ``_EXPECTED_HEAVY_ATOMS`` says they should.
 
-    Reuses ``physics_judge.rosetta_scorer._ensure_init`` so PyRosetta
-    initializes exactly once even when both judges run in the same
-    process.
+    If ``chain_id`` is given, only consider residues in that chain.
+    Hydrogens and non-standard residues are ignored.
+    """
+    counts: dict[tuple[str, int, str], tuple[str, int]] = {}
+    with open(pdb_path) as f:
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21]
+            if chain_id is not None and chain != chain_id:
+                continue
+            element = line[76:78].strip() if len(line) >= 78 else ""
+            atom_name = line[12:16].strip()
+            if element == "H" or (not element and atom_name.startswith("H")):
+                continue
+            try:
+                resseq = int(line[22:26])
+            except ValueError:
+                continue
+            icode = line[26] if len(line) > 26 else " "
+            resname = line[17:20].strip()
+            key = (chain, resseq, icode)
+            prior_name, prior_n = counts.get(key, (resname, 0))
+            counts[key] = (prior_name, prior_n + 1)
+
+    incomplete: set[tuple[str, int, str, str]] = set()
+    for (chain, resseq, icode), (resname, n) in counts.items():
+        expected = _EXPECTED_HEAVY_ATOMS.get(resname)
+        if expected is None:
+            continue
+        if n < expected:
+            incomplete.add((chain, resseq, icode, resname))
+    return incomplete
+
+
+def pack_missing_sidechains(
+    input_pdb: str | Path,
+    output_pdb: str | Path,
+    chain_id: str | None = None,
+    shell_radius: float = 6.0,
+) -> Path:
+    """Place side chains for residues whose heavy-atom record is incomplete.
+
+    DiffAb writes only backbone (N, CA, C, O) atoms for the residues it
+    regenerated. This function fills those in using PyRosetta's standard
+    ``PackRotamersMover`` over the Dunbrack 2010 rotamer library — a
+    deterministic post-process that places each missing side chain at
+    its most plausible orientation given the surrounding backbone.
+
+    Scope is kept deliberately tight:
+
+      * Backbone atoms are **never moved** (no FastRelax, no minimization).
+      * Only residues identified as incomplete are flagged for repack.
+      * A spherical shell of ``shell_radius`` Å around the incomplete
+        residues is included for local context (so the placed rotamers
+        respect their immediate neighbors), but those shell residues
+        themselves keep their original rotamers — they're held fixed
+        and only used for clash evaluation.
+      * If ``chain_id`` is given, repacking is also restricted to that
+        chain, so antigen rotamers are never touched even if a CDR
+        residue happens to sit within ``shell_radius`` of one.
+
+    If no incomplete residues are found, the function simply copies
+    ``input_pdb`` to ``output_pdb`` and returns.
 
     Args:
-        input_pdb: Path to the IMGT-numbered VHH monomer with possibly
-            incomplete CDR side chains.
+        input_pdb: Source PDB (e.g. DiffAb's sample output).
         output_pdb: Destination PDB.
+        chain_id: If set, restrict repack to this chain. For AAPR
+            samples, pass the VHH chain id so the antigen is preserved.
+        shell_radius: Distance (Å) around incomplete residues from
+            which neighbors are loaded into the packer as fixed
+            context. 6 Å roughly captures the first contact shell.
 
     Returns:
         ``output_pdb`` as a Path.
     """
-    from src.physics_judge.rosetta_scorer import _ensure_init, repack_complex
-
     input_pdb = Path(input_pdb)
     output_pdb = Path(output_pdb)
     output_pdb.parent.mkdir(parents=True, exist_ok=True)
 
+    incomplete = _find_incomplete_residues(input_pdb, chain_id=chain_id)
+    if not incomplete:
+        import shutil
+        shutil.copy(input_pdb, output_pdb)
+        logger.debug("No incomplete residues in %s — copied as-is.", input_pdb)
+        return output_pdb
+
+    from src.physics_judge.rosetta_scorer import _ensure_init
     _ensure_init()
     import pyrosetta
+    from pyrosetta.rosetta.core.pack.task import TaskFactory
+    from pyrosetta.rosetta.core.pack.task.operation import (
+        InitializeFromCommandline,
+        OperateOnResidueSubset,
+        PreventRepackingRLT,
+        RestrictToRepacking,
+    )
+    from pyrosetta.rosetta.core.select.residue_selector import (
+        ChainSelector,
+        NeighborhoodResidueSelector,
+        NotResidueSelector,
+        ResidueIndexSelector,
+    )
+    from pyrosetta.rosetta.protocols.minimization_packing import PackRotamersMover
 
     pose = pyrosetta.pose_from_pdb(str(input_pdb))
-    repack_complex(pose)  # logs pre→post score delta
+    pdb_info = pose.pdb_info()
+
+    # Map (chain, resseq, icode) → pose index for the incomplete residues.
+    incomplete_lookup = {(c, r, i): rn for (c, r, i, rn) in incomplete}
+    pose_indices: list[int] = []
+    for i in range(1, pose.total_residue() + 1):
+        chain = pdb_info.chain(i)
+        resseq = pdb_info.number(i)
+        icode = pdb_info.icode(i) or " "
+        if (chain, resseq, icode) in incomplete_lookup:
+            pose_indices.append(i)
+
+    if not pose_indices:
+        logger.warning(
+            "Found %d incomplete residues in %s but could not map any "
+            "to pose indices — copying input as-is.",
+            len(incomplete), input_pdb,
+        )
+        import shutil
+        shutil.copy(input_pdb, output_pdb)
+        return output_pdb
+
+    indices_str = ",".join(str(i) for i in pose_indices)
+    focus_selector = ResidueIndexSelector(indices_str)
+    # The neighborhood selector by default returns focus + neighbors. We
+    # want focus packable, neighbors packable too (so rotamers relax
+    # locally), and everything else frozen. ``include_focus_in_subset``
+    # defaults True in newer PyRosetta — keep it that way.
+    repack_selector = NeighborhoodResidueSelector(focus_selector, shell_radius)
+    if chain_id is not None:
+        # AND with chain restriction so the shell can't pull in antigen.
+        from pyrosetta.rosetta.core.select.residue_selector import AndResidueSelector
+        repack_selector = AndResidueSelector(repack_selector, ChainSelector(chain_id))
+
+    no_repack_selector = NotResidueSelector(repack_selector)
+
+    sfxn = pyrosetta.create_score_function("ref2015")
+    tf = TaskFactory()
+    tf.push_back(InitializeFromCommandline())
+    tf.push_back(RestrictToRepacking())  # never design — only repack
+    tf.push_back(OperateOnResidueSubset(PreventRepackingRLT(), no_repack_selector))
+    task = tf.create_task_and_apply_taskoperations(pose)
+
+    pre = sfxn(pose)
+    PackRotamersMover(sfxn, task).apply(pose)
+    post = sfxn(pose)
+
+    logger.info(
+        "pack_missing_sidechains(%s): %d incomplete residues in chain(s) %s; "
+        "ref2015 %.1f → %.1f REU (Δ %+.1f).",
+        input_pdb.name, len(pose_indices),
+        chain_id or "any", pre, post, post - pre,
+    )
+
     pose.dump_pdb(str(output_pdb))
     return output_pdb
