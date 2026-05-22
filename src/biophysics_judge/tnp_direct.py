@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .pdb_utils import extract_vhh_monomer, pack_sidechains, renumber_to_imgt
+from .pdb_utils import extract_vhh_monomer, renumber_to_imgt
 
 logger = logging.getLogger(__name__)
 
@@ -72,24 +72,26 @@ def score_pdb(
          because TNP's CreateAnnotation hardcodes "H").
       2. Renumber the monomer's residues to the IMGT scheme via
          ``abnumber``. TNP's metric functions look up residues by IMGT
-         number; the source crystal numbering DiffAb inherits does not
-         align with IMGT and would leave ``parse_nb``'s CDR3 anchor
-         list empty.
-      3. Pack side chains via PyRosetta. DiffAb writes backbone-only
-         atoms for the regenerated CDR residues; without this step
-         PSH would be inflated by ~+50 REU because the calculation
-         reads solvent-accessible side-chain surface.
-      4. Compute CDR lengths (IMGT) from the *sequence* via TNP's
+         number; the source crystal numbering does not align with IMGT
+         and would leave ``parse_nb``'s CDR3 anchor list empty.
+      3. Compute CDR lengths (IMGT) from the *sequence* via TNP's
          ``CDR_Assigner.main`` — same source TNP CLI uses.
-      5. Compute rho via TNP's ``main_compactness`` on the packed
+      4. Compute rho via TNP's ``main_compactness`` on the renumbered
          monomer PDB. compactness = imgt_cdr3_length / rho  (TNP's
          corrected formula, per "UPDATED (corrected) 23.08.25" in
          bin/TNP).
-      6. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
-         same packed monomer.
-      7. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
-         points at the packed monomer so downstream judges (Biology)
-         can re-use the same coordinates.
+      5. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
+         same renumbered monomer.
+      6. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
+         points at the renumbered monomer so downstream judges
+         (Biology) can re-use the same coordinates.
+
+    NOTE: side-chain placement is no longer this module's responsibility.
+    AAPR samples must arrive on disk with full atoms — the packer lives
+    at sample time (``scripts/aapr/sample_candidates.py``) so the saved
+    PDBs are self-contained for all downstream consumers (biophysics,
+    biology, physics, sc-RMSD benchmarking). Crystal inputs (SAbDab /
+    ANDD) already have full atoms.
 
     Args:
         complex_pdb_path: VHH+antigen complex PDB (DiffAb output or
@@ -127,11 +129,6 @@ def score_pdb(
         target_chain_id="H",
     )
     renumber_to_imgt(raw_monomer_path, monomer_path)
-    # NOTE: pack_sidechains() exists but is deliberately not called here
-    # while we're debugging whether DiffAb output is the root cause of
-    # the PSH shift. Re-enable only after the GT-crystal test
-    # (scripts/test_sabdab_judges.py --score-biophysics on ANDD curated)
-    # confirms the pipeline is correct on known-good input.
 
     # ── CDR lengths (sequence-derived, IMGT) ──
     # region_and_aa_dicts writes intermediate files to a temp dir we
