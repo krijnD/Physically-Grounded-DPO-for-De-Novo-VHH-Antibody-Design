@@ -119,7 +119,6 @@ def score_pdb(
 
     output_dir = Path(output_dir)
     raw_monomer_path = output_dir / f"{candidate_id}.raw.pdb"
-    imgt_monomer_path = output_dir / f"{candidate_id}.imgt.pdb"
     monomer_path = output_dir / f"{candidate_id}.pdb"
     extract_vhh_monomer(
         complex_pdb_path=complex_pdb_path,
@@ -127,8 +126,12 @@ def score_pdb(
         output_path=raw_monomer_path,
         target_chain_id="H",
     )
-    renumber_to_imgt(raw_monomer_path, imgt_monomer_path)
-    pack_sidechains(imgt_monomer_path, monomer_path)
+    renumber_to_imgt(raw_monomer_path, monomer_path)
+    # NOTE: pack_sidechains() exists but is deliberately not called here
+    # while we're debugging whether DiffAb output is the root cause of
+    # the PSH shift. Re-enable only after the GT-crystal test
+    # (scripts/test_sabdab_judges.py --score-biophysics on ANDD curated)
+    # confirms the pipeline is correct on known-good input.
 
     # ── CDR lengths (sequence-derived, IMGT) ──
     # region_and_aa_dicts writes intermediate files to a temp dir we
