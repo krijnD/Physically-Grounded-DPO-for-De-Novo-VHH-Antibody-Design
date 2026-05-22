@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .pdb_utils import extract_vhh_monomer, renumber_to_imgt
+from .pdb_utils import extract_vhh_monomer, pack_sidechains, renumber_to_imgt
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +75,21 @@ def score_pdb(
          number; the source crystal numbering DiffAb inherits does not
          align with IMGT and would leave ``parse_nb``'s CDR3 anchor
          list empty.
-      3. Compute CDR lengths (IMGT) from the *sequence* via TNP's
+      3. Pack side chains via PyRosetta. DiffAb writes backbone-only
+         atoms for the regenerated CDR residues; without this step
+         PSH would be inflated by ~+50 REU because the calculation
+         reads solvent-accessible side-chain surface.
+      4. Compute CDR lengths (IMGT) from the *sequence* via TNP's
          ``CDR_Assigner.main`` — same source TNP CLI uses.
-      4. Compute rho via TNP's ``main_compactness`` on the renumbered
+      5. Compute rho via TNP's ``main_compactness`` on the packed
          monomer PDB. compactness = imgt_cdr3_length / rho  (TNP's
          corrected formula, per "UPDATED (corrected) 23.08.25" in
          bin/TNP).
-      5. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
-         same renumbered monomer.
-      6. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
-         points at the renumbered monomer so downstream judges
-         (Biology) can re-use the same coordinates.
+      6. Compute PSH / PPC / PNC via TNP's ``CreateAnnotation`` on the
+         same packed monomer.
+      7. Return the metrics packaged as a ``TNPResult``. ``pdb_path``
+         points at the packed monomer so downstream judges (Biology)
+         can re-use the same coordinates.
 
     Args:
         complex_pdb_path: VHH+antigen complex PDB (DiffAb output or
@@ -115,6 +119,7 @@ def score_pdb(
 
     output_dir = Path(output_dir)
     raw_monomer_path = output_dir / f"{candidate_id}.raw.pdb"
+    imgt_monomer_path = output_dir / f"{candidate_id}.imgt.pdb"
     monomer_path = output_dir / f"{candidate_id}.pdb"
     extract_vhh_monomer(
         complex_pdb_path=complex_pdb_path,
@@ -122,7 +127,8 @@ def score_pdb(
         output_path=raw_monomer_path,
         target_chain_id="H",
     )
-    renumber_to_imgt(raw_monomer_path, monomer_path)
+    renumber_to_imgt(raw_monomer_path, imgt_monomer_path)
+    pack_sidechains(imgt_monomer_path, monomer_path)
 
     # ── CDR lengths (sequence-derived, IMGT) ──
     # region_and_aa_dicts writes intermediate files to a temp dir we

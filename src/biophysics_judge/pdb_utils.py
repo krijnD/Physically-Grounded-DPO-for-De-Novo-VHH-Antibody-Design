@@ -210,3 +210,51 @@ def renumber_to_imgt(monomer_pdb: str | Path, output_pdb: str | Path) -> Path:
                 fout.write(line)
 
     return output_pdb
+
+
+def pack_sidechains(input_pdb: str | Path, output_pdb: str | Path) -> Path:
+    """Place / repack side chains via PyRosetta's fixed-backbone packer.
+
+    DiffAb writes backbone atoms only (N, CA, C, O, CB) for the residues
+    it regenerated (CDRs in the multi-CDR π_ref scope). TNP's surface
+    metrics — especially PSH — read solvent-accessible side-chain
+    surface, so a backbone-only CDR inflates PSH by ~+50 REU vs. a
+    structure with full atoms (validated on the 2026-05-21 seed42_dedup
+    canary).
+
+    This wrapper:
+      1. Loads the input PDB into a Pose; PyRosetta autoplaces missing
+         heavy atoms in idealized positions.
+      2. Runs ``PackRotamersMover`` with ``RestrictToRepacking`` on
+         every residue (single-chain monomer — no antigen to preserve).
+         Framework residues with already-good crystal rotamers usually
+         stay put; CDR residues get sampled into the Dunbrack 2010
+         library and pick a low-energy rotamer.
+      3. Dumps the packed pose, preserving residue numbering /
+         insertion codes (PyRosetta's PDBInfo carries them through).
+
+    Reuses ``physics_judge.rosetta_scorer._ensure_init`` so PyRosetta
+    initializes exactly once even when both judges run in the same
+    process.
+
+    Args:
+        input_pdb: Path to the IMGT-numbered VHH monomer with possibly
+            incomplete CDR side chains.
+        output_pdb: Destination PDB.
+
+    Returns:
+        ``output_pdb`` as a Path.
+    """
+    from src.physics_judge.rosetta_scorer import _ensure_init, repack_complex
+
+    input_pdb = Path(input_pdb)
+    output_pdb = Path(output_pdb)
+    output_pdb.parent.mkdir(parents=True, exist_ok=True)
+
+    _ensure_init()
+    import pyrosetta
+
+    pose = pyrosetta.pose_from_pdb(str(input_pdb))
+    repack_complex(pose)  # logs pre→post score delta
+    pose.dump_pdb(str(output_pdb))
+    return output_pdb
