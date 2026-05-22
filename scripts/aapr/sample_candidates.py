@@ -86,6 +86,14 @@ from diffab.utils.transforms import (  # noqa: E402
 # Register our vhh_andd dataset adapter (side-effect import).
 import src.diffab_ft.datasets  # noqa: E402, F401
 
+# Side-chain placement post-process — DiffAb only generates backbone
+# atoms for regenerated CDRs, so we run PyRosetta's PackRotamersMover
+# (Dunbrack 2010 library) on the saved PDB before it leaves the
+# sampler. Backbone is held fixed; only side-chain rotamers are
+# placed. Antigen rotamers are preserved by restricting repacking to
+# the VHH chain.
+from src.biophysics_judge.pdb_utils import pack_missing_sidechains  # noqa: E402
+
 # Biopython index_to_one matches DiffAb's AA indexing.
 from Bio.PDB import Polypeptide  # noqa: E402
 
@@ -264,6 +272,7 @@ def run_aapr_sampling(
             )
 
             pdb_path = entry_pdb_dir / f"sample_{i:04d}.pdb"
+            raw_pdb_path = entry_pdb_dir / f"sample_{i:04d}.raw.pdb"
             save_pdb({
                 "chain_nb": data_tmpl["chain_nb"],
                 "chain_id": data_tmpl["chain_id"],
@@ -272,7 +281,26 @@ def run_aapr_sampling(
                 "aa":       aa_full,
                 "mask_heavyatom": mask_atom_full,
                 "pos_heavyatom":  pos_full,
-            }, path=str(pdb_path))
+            }, path=str(raw_pdb_path))
+
+            # Fill in side chains for the residues DiffAb regenerated
+            # (CDRs come out backbone-only). Restricted to the VHH chain
+            # so antigen rotamers are preserved end-to-end. The .raw.pdb
+            # is left on disk for provenance / debugging.
+            heavy_chain_id = meta_for_entry.get("Hchain", "") or None
+            try:
+                pack_missing_sidechains(
+                    raw_pdb_path, pdb_path,
+                    chain_id=heavy_chain_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "entry %s sample %d: side-chain packing failed "
+                    "(%s: %s); falling back to raw backbone-only PDB.",
+                    entry_id, i, exc.__class__.__name__, exc,
+                )
+                import shutil
+                shutil.copy(raw_pdb_path, pdb_path)
 
             # Reconstruct the regenerated VHH sequence for the manifest.
             # Use the heavy-chain residues only (chain_id == Hchain).
