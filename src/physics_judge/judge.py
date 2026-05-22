@@ -54,7 +54,7 @@ class PhysicsJudge:
         self,
         e_rep_reject: float = Config.E_REP_REJECT,
         cdr_energy_reject: float = Config.CDR_ENERGY_PER_RES_REJECT,
-        refinement_mode: str = "pack_cdrs",
+        refinement_mode: str = "none",
     ):
         self.e_rep_reject = e_rep_reject
         self.cdr_energy_reject = cdr_energy_reject

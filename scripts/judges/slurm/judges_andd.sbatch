@@ -78,18 +78,23 @@ echo "Output:      $OUT_PARQUET"
 echo "Started:     $(date -Iseconds)"
 
 # ── Run ─────────────────────────────────────────────────────────────
-# Refinement mode: `full` is the canonical regime locked by the §5.5
-# calibration (commit 59c1208, docs/calibration/threshold_decisions.md).
-# Pack-mode p80 inherits unresolved GT clashes; full-mode resolves them
-# via FastRelax. Wall-time ~5-6 min/row in full (vs ~10-30s/row in pack);
-# at 15 rows/chunk this is ~90 min, well under the 12h --time budget.
-# For AAPR scoring at higher rows/chunk, bump --time and/or --array
-# accordingly.
+# Refinement mode: `none` — supersedes the original `full` choice.
+# The 2026-05-22 pilot (scripts/judges/pilot_refinement_compare.py) on
+# 10 GTs at resolution ≤ 3 Å showed pack_cdrs catastrophically degrades
+# well-resolved crystals in ~30% of cases (worst: 7f5g 1.75 Å, CDR-
+# energy jumped −0.5 → +37 REU/res). FastRelax (`full`) additionally
+# moves backbones, making thresholds inapplicable to as-generated AAPR
+# outputs. With `none` we trust the deposited GT data and apply the
+# identical no-refinement pipeline to AAPR scoring, so the thresholds
+# and the scores live in the same metric space.
+# Wall-time: ~1-2 s/row (no Rosetta refinement), so 15 rows/chunk
+# finishes in <1 min of physics time. The TNP+Biology overhead now
+# dominates; 12h --time stays well over budget.
 python scripts/test_sabdab_judges.py \
     --csv "$CSV_FILE" \
     --pdb-dir "$PDB_DIR" \
     --output "$OUT_PARQUET" \
-    --refinement-mode full \
+    --refinement-mode none \
     --run-tnp --ncores 4
 
 echo "Finished:    $(date -Iseconds)"

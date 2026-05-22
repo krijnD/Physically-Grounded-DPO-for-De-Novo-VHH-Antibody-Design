@@ -918,7 +918,7 @@ def score_complex(
     nanobody_chain_id: str = "H",
     interface: str = Config.ROSETTA_INTERFACE,
     cdr_ranges: list[tuple[int, int]] = Config.VHH_CDR_RANGES,
-    refinement_mode: str = "pack_cdrs",
+    refinement_mode: str = "none",
     ccd_outer_cycles: int = Config.CCD_OUTER_CYCLES,
     ccd_max_inner_cycles: int = Config.CCD_MAX_INNER_CYCLES,
     e_rep_fast_fail: float = Config.E_REP_REJECT,
@@ -928,10 +928,19 @@ def score_complex(
     Pipeline:
       1. Load PDB → Pose
       2. Refinement (per ``refinement_mode``):
-           - ``"pack_cdrs"`` (default): CDR + ±2 shell side-chain repack
-             only (~10–30s). Recommended for both calibration on GT
-             crystals and AAPR on model outputs — backbone is preserved
-             so the metric is faithful to the input structure.
+           - ``"none"``: no refinement; score the pose exactly as loaded.
+             Recommended for both calibration on GT crystals and AAPR on
+             model outputs — matches the inputs exactly. Use this when
+             you trust both sides' geometries (e.g. high-resolution
+             crystals and DiffAb outputs that should be evaluated
+             as-generated). The 2026-05-22 pilot
+             (scripts/judges/pilot_refinement_compare.py) showed that
+             pack_cdrs can degrade well-resolved crystals catastrophically
+             (e.g. 7f5g at 1.75 Å: CDR-energy jumped −0.5 → +37 REU/res),
+             so "none" is the safest default for matched-pipeline scoring.
+           - ``"pack_cdrs"``: CDR + ±2 shell side-chain repack only
+             (~10–30s). Backbone preserved. May help DiffAb outputs that
+             have unpacked rotamers, but can hurt well-resolved crystals.
            - ``"full"``: Full-complex side-chain repack + FastRelax on
              CDR loops (~5–6 min). Only useful for paranoid runs on
              ill-prepared crystal PDBs; FastRelax distorts the CDR
@@ -966,10 +975,10 @@ def score_complex(
         ValueError: if ``refinement_mode`` is not one of the supported
             values.
     """
-    if refinement_mode not in ("pack_cdrs", "full"):
+    if refinement_mode not in ("none", "pack_cdrs", "full"):
         raise ValueError(
             f"Unknown refinement_mode={refinement_mode!r}; "
-            "must be one of: 'pack_cdrs', 'full'."
+            "must be one of: 'none', 'pack_cdrs', 'full'."
         )
     _ensure_init()
 
@@ -978,7 +987,16 @@ def score_complex(
     # Refinement — dispatch on requested mode. All branches catch
     # exceptions to avoid losing the candidate to a Rosetta hiccup;
     # the downstream scoring still runs on whatever pose state we have.
-    if refinement_mode == "pack_cdrs":
+    if refinement_mode == "none":
+        # No refinement: score the pose exactly as loaded. Used when we
+        # explicitly do not want any rotamer/backbone modification —
+        # e.g. for GT calibration where we trust the deposited data, or
+        # for DiffAb outputs where we want to score the generated
+        # geometry as-is. See the 2026-05-22 pilot
+        # (scripts/judges/pilot_refinement_compare.py) showing that
+        # pack_cdrs can catastrophically degrade well-resolved crystals.
+        pass
+    elif refinement_mode == "pack_cdrs":
         try:
             pack_cdr_shell(pose, nanobody_chain_id, cdr_ranges=cdr_ranges)
         except Exception:

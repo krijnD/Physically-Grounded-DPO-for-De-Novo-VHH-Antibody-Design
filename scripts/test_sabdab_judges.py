@@ -140,13 +140,16 @@ def main():
     )
     parser.add_argument(
         "--refinement-mode",
-        choices=["pack_cdrs", "full"],
-        default="pack_cdrs",
-        help="Physics Judge structure prep mode. 'pack_cdrs' (default, "
-             "~10–30s/entry) repacks CDR + ±2 framework shell side chains. "
-             "'full' (~5–6 min/entry) does full-complex repack + FastRelax "
-             "on CDR loops. Use 'full' only for paranoid runs on raw "
-             "crystal PDBs where you suspect framework clashes.",
+        choices=["none", "pack_cdrs", "full"],
+        default="none",
+        help="Physics Judge structure prep mode. 'none' (default, "
+             "since the 2026-05-22 pilot showed pack_cdrs can degrade "
+             "well-resolved crystals catastrophically) scores the PDB "
+             "exactly as loaded. 'pack_cdrs' (~10–30s/entry) repacks "
+             "CDR + ±2 framework shell side chains. 'full' (~5–6 min/"
+             "entry) does full-complex repack + FastRelax on CDR loops. "
+             "Use 'full' only for paranoid runs on raw crystal PDBs "
+             "where you suspect framework clashes.",
     )
     args = parser.parse_args()
 

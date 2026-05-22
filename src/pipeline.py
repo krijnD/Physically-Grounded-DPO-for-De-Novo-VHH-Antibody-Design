@@ -139,9 +139,13 @@ def run_pipeline(
             candidate.pdb_filepath = result.pdb_path
 
     # ── Phase 3: Multi-Judge Evaluation (every judge, every candidate) ──
+    # Physics judge: refinement_mode="none" — the 2026-05-22 pilot
+    # (scripts/judges/pilot_refinement_compare.py) showed pack_cdrs can
+    # destroy well-resolved crystal energies; with "none" the AAPR
+    # scoring pipeline matches the GT calibration pipeline (also "none").
     biology_judge = BiologyJudge()
     biophysics_judge = BiophysicsJudge()
-    physics_judge = PhysicsJudge()
+    physics_judge = PhysicsJudge(refinement_mode="none")
 
     total = len(candidates)
     judge_start = time.time()

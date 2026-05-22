@@ -84,21 +84,31 @@ class Config:
     # residues, here additionally divided by N_CDR_residues for scope-
     # invariance (works under CDR-H3-only or multi-CDR π_ref scope).
     #
-    # ── EMPIRICAL CALIBRATION (AbDPO Appendix E.1 methodology) ──
-    # Both thresholds are the 80th-percentile of the natural ANDD VHH
-    # GT distribution under `--refinement-mode full` (full-complex
-    # side-chain repack + FastRelax on CDR loops), n=458 after dropping
-    # 7 PyRosetta-crash rows. Bootstrap 95% CIs from 1000 resamples,
-    # seed=42. See scripts/calibration/percentile_analysis.py and
-    # docs/calibration/pack_vs_full_summary.md.
+    # ⚠️  STALE — NEEDS RECALIBRATION (2026-05-22)
+    # The values below were computed under `--refinement-mode full`
+    # against the J-anchor-truncated GT dataset (parser cap=113, fixed in
+    # commit 5c4f966). Both inputs are now wrong: (1) the GTs were
+    # missing the J-anchor on ~76% of test-split entries, (2) the `full`
+    # regime is no longer in use (see below). Recalibration must rerun
+    # `scripts/judges/slurm/judges_andd.sbatch` on the rebuilt LMDB with
+    # `--refinement-mode none` and replace the values here.
     #
-    # Refinement-regime choice: the `pack_cdrs` arm yields p80 = +9.72
-    # REU/residue for cdr_energy_per_res because it inherits unresolved
-    # GT clashes that aren't physics — they're crystallographic noise
-    # that FastRelax dissolves. Pack/full CIs are disjoint on 4 of 5
-    # physics scalars; this is a regime change, not measurement noise.
-    # Thus AAPR generation MUST also use `--refinement-mode full` so the
-    # scored candidates and the GT distribution live in the same regime.
+    # ── REFINEMENT POLICY (2026-05-22) ──
+    # Calibration AND AAPR scoring both run `--refinement-mode none`.
+    # Rationale from the 2026-05-22 pilot
+    # (scripts/judges/pilot_refinement_compare.py): pack_cdrs catastrophically
+    # degrades ~30% of well-resolved crystal GTs (worst: 7f5g 1.75 Å,
+    # CDR-energy jumped −0.5 → +37 REU/res from rotamer-library mismatch).
+    # FastRelax (`full`) additionally moves backbones, so applying it to
+    # GTs and not to as-generated AAPR outputs would create a metric-space
+    # mismatch. With `none` on both sides the thresholds and the AAPR
+    # scores live in the same metric space.
+    #
+    # ── ORIGINAL CALIBRATION METHODOLOGY (AbDPO Appendix E.1) ──
+    # Both thresholds = 80th-percentile of the natural ANDD VHH GT
+    # distribution, n=458 after dropping 7 PyRosetta-crash rows. Bootstrap
+    # 95% CIs from 1000 resamples, seed=42. See
+    # scripts/calibration/percentile_analysis.py.
     #
     # Note the per-residue convention: AbDPO Table 4 reports values
     # SUMMED over CDR-H3 residues; thesis project divides by
@@ -108,17 +118,11 @@ class Config:
     #
     # Previous (literature-derived, superseded) values:
     #   CDR_ENERGY_PER_RES_REJECT = -0.2  — misattributed to AbDPO; the
-    #     actual figure was never per-residue in the source, and even at
-    #     -0.2 it rejected ~40% of natural ANDD when applied under
-    #     pack_cdrs. Tellingly, the empirical full p80 of -0.183 is
-    #     within rounding distance of -0.2 — so the literature number
-    #     was correct in spirit, but the calibration regime that
-    #     produced it was full-relax, not pack-only.
-    #   E_REP_REJECT = 5.0  — also dropped ~80% of natural ANDD at p80
-    #     (both pack and full arms exceed it at p70+), suggesting the
-    #     5.0 cap was tuned for a different scoring/interface scope.
-    CDR_ENERGY_PER_RES_REJECT: float = -0.183  # REU/residue. Full p80, CI [-0.320, -0.059]. AbDPO §E.1
-    E_REP_REJECT: float = 5.746                # REU. Full p80, CI [+5.162, +6.338]. AbDPO §E.1
+    #     actual figure was never per-residue in the source.
+    #   E_REP_REJECT = 5.0  — also dropped ~80% of natural ANDD at p80,
+    #     suggesting the 5.0 cap was tuned for a different scoring scope.
+    CDR_ENERGY_PER_RES_REJECT: float = -0.183  # ⚠️ STALE: full-mode p80 on truncated GT. Recalibrate under none-mode + J-anchor-fixed LMDB.
+    E_REP_REJECT: float = 5.746                # ⚠️ STALE: full-mode p80 on truncated GT. Recalibrate under none-mode + J-anchor-fixed LMDB.
     # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
