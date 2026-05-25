@@ -95,6 +95,6 @@ python scripts/test_sabdab_judges.py \
     --pdb-dir "$PDB_DIR" \
     --output "$OUT_PARQUET" \
     --refinement-mode none \
-    --run-tnp --ncores 4
+    --run-tnp
 
 echo "Finished:    $(date -Iseconds)"
