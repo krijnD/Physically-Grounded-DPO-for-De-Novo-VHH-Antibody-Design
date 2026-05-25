@@ -6,10 +6,15 @@
 #     (29 MB, multi-CDR, post-J-anchor-fix LMDB; see
 #      docs/post_jfix_dpo_handoff.md §1.)
 #   * Pair parquet at
-#       data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet
-#     (192 pairs across 25 GTs; selected by scripts/dpo/select_pareto_pairs.py).
-#   * Test-split GT structures already in the LMDB at
-#       data/processed/vhh_ft/   (the same LMDB the fine-tune reads).
+#       data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs.parquet
+#     (1492 pairs across 200 GTs — the production TRAIN+VAL AAPR run.
+#      Selected by scripts/dpo/select_pareto_pairs.py. The 192-pair
+#      TEST canary at data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet
+#      is retained for fast-iteration debugging only.)
+#   * TRAIN+VAL GT structures in the LMDB at
+#       data/processed/vhh_ft/   (the same LMDB the fine-tune reads;
+#      its dataset.train.split below is set to 'train' to be valid,
+#      but PairDataset's GT lookup is split-agnostic — see below.)
 #
 # This config is consumed by scripts/dpo/train_dpo.py via DiffAb's
 # load_config (single yaml.safe_load, no merge). Mirror the model
@@ -49,10 +54,14 @@ train:
     rot: 1.0
     pos: 1.0
     seq: 1.0
-  # 5000 iters / batch_size 4 → ~1250 epochs over 192 pairs. AbDPO
-  # converges in 1-3k iters on similar-sized data; this leaves headroom
-  # for early-stop to fire well before max_iters.
-  max_iters: 5000
+  # 10000 iters / batch_size 4 = ~27 epochs over 1492 pairs (vs ~1250
+  # epochs over the 192-pair canary at 5k iters). AbDPO precedent is
+  # 1-3k iters of converged training on similar-sized data; 10k gives
+  # generous early-stop headroom while still finishing within the
+  # ~6h budget on a single A100. If early stop fires below 3k, that's
+  # the expected outcome — bump only if val DPO loss is still trending
+  # at iter 10k.
+  max_iters: 10000
   val_freq: 100
   batch_size: 4
   seed: 42
@@ -87,7 +96,10 @@ dpo:
   pi_ref_checkpoint: runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
 
   # Pair training data (output of scripts/dpo/select_pareto_pairs.py).
-  pair_parquet: data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet
+  # 1492 pairs across 200 GTs from the 2026-05-25 TRAIN+VAL AAPR run.
+  # For fast debugging, swap to the test-only canary:
+  #   pair_parquet: data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet  # 192 pairs
+  pair_parquet: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs.parquet
 
   # DPO temperature. AbDPO Table 1 uses 0.1 as the headline value;
   # Wallace et al. sweep 0.05-0.5. Treat as the primary ablation knob.
@@ -107,20 +119,23 @@ dpo:
 
   # Train/val split — GT-stratified, holding out N GTs entirely so no
   # pair leaks across the boundary (different pairs from the same GT
-  # share the same antigen+framework context). With 25 GTs and ~7.7
-  # pairs/GT, 3 holdout GTs ≈ 23 val pairs / 169 train pairs.
-  val_gt_holdout: 3
+  # share the same antigen+framework context). With 200 GTs and ~7.5
+  # pairs/GT, 20 holdout GTs ≈ 150 val pairs / 1340 train pairs (10%
+  # val). The val pool will be a random mix of fine-tune train-GTs
+  # (loser-driven signal, L_w_ref ≈ 0) and val-GTs (symmetric signal,
+  # L_w_ref > 0); for a cleaner symmetric-only val signal, set
+  # val_gt_ids below to the 34 fine-tune val-GT IDs instead.
+  val_gt_holdout: 20
   val_split_seed: 42
   # Optional: explicit list of bare-PDB GT IDs to use as the val pool,
-  # overriding val_gt_holdout / val_split_seed. Recommended for the
-  # combined train+val AAPR pair pool: list the original fine-tune
-  # val-split GTs here so the DPO val set has L_w_ref > 0 (symmetric
-  # signal, cleaner early-stop). The DPO train pool then gets all the
-  # train-split GTs (loser-driven signal — fine for the gradient,
-  # noisier for val-loss interpretability). Example:
-  # val_gt_ids:
-  #   - 7abc   # one of the 34 fine-tune val GTs
-  #   - 8xyz   # ...
+  # overriding val_gt_holdout / val_split_seed. Recommended alternative
+  # for the trainval pair pool: list the original fine-tune val-split
+  # GTs here so the DPO val set has L_w_ref > 0 (symmetric signal,
+  # cleaner early-stop). The DPO train pool then gets all train-split
+  # GTs (loser-driven gradient signal — fine, just asymmetric).
+  # Generate the list on Snellius with:
+  #   python -c "import json; s=json.load(open('data/datasets/clustering/cluster_splits.json')); \
+  #              [print(f'    - {e.split(chr(95))[0]}') for e in sorted({e for e in s['splits']['val']})]"
   val_gt_ids: null
 
   # Defensive: drop pairs whose post-transform generate_flag differs
@@ -136,11 +151,14 @@ dpo:
   pair_seed_offset: 0
 
 # Dataset block — used to construct the underlying VHHANDDDataset
-# whose LMDB the PairDataset reads winners from. We point at the
-# 'test' split because the pair parquet's GTs are test-split entries
-# (post-J-anchor-fix AAPR was run on test). The trainer ignores the
-# 'val' dataset block — DPO's val pool is GT-stratified inside the
-# pair parquet, not derived from cluster_splits.json.
+# whose LMDB the PairDataset reads winners from. The 'train' split is
+# the largest of the three splits in cluster_splits.json (176 GTs);
+# any non-empty split works because PairDataset's GT lookup iterates
+# base_dataset.sabdab_entries (which after _load_structures contains
+# all preprocessed entries regardless of split) and filters by
+# db_ids. The trainer ignores the 'val' dataset block — DPO's val
+# pool is GT-stratified inside the pair parquet, not derived from
+# cluster_splits.json.
 dataset:
   train:
     type: vhh_andd
@@ -148,7 +166,7 @@ dataset:
     pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
     processed_dir: data/processed/vhh_ft
     splits_path:   data/datasets/clustering/cluster_splits.json
-    split: test
+    split: train
     heavy_max_resseq: 150
     # The transforms applied to BOTH winner and loser inside
     # PairDataset.__getitem__. Mirrors the fine-tune's train pipeline
