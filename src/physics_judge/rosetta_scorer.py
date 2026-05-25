@@ -921,7 +921,7 @@ def score_complex(
     refinement_mode: str = "none",
     ccd_outer_cycles: int = Config.CCD_OUTER_CYCLES,
     ccd_max_inner_cycles: int = Config.CCD_MAX_INNER_CYCLES,
-    e_rep_fast_fail: float = Config.E_REP_REJECT,
+    e_rep_fast_fail: float = Config.E_REP_FAST_FAIL,
 ) -> PhysicsScores:
     """Score a nanobody–antigen complex for steric clashes and CDR binding energy.
 
@@ -964,7 +964,12 @@ def score_complex(
                          See pipeline step 2 above.
         ccd_outer_cycles: CCD outer cycles (full mode only; AbDPO default: 1).
         ccd_max_inner_cycles: CCD inner cycles (full mode only; AbDPO default: 10).
-        e_rep_fast_fail: E_Rep threshold for skipping CDR energy.
+        e_rep_fast_fail: E_Rep threshold above which CDR-energy compute is
+                         SKIPPED (returns NaN). Default is
+                         ``Config.E_REP_FAST_FAIL`` (= 1000 REU) — set high
+                         intentionally so DPO pair selection has populated
+                         axes on every candidate. *Not* a verdict threshold;
+                         the pass/fail decision uses ``Config.E_REP_REJECT``.
 
     Returns:
         :class:`PhysicsScores` with ``e_rep`` always populated and

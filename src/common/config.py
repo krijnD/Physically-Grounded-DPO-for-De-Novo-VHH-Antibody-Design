@@ -127,6 +127,17 @@ class Config:
     #   E_REP_REJECT = 5.746                (full-mode, truncated GT)
     CDR_ENERGY_PER_RES_REJECT: float = +2.844  # REU/residue. none-mode p80, CI [+2.243, +3.210], n=193
     E_REP_REJECT: float = +3.271               # REU. none-mode p80, CI [+2.881, +4.217], n=220
+    # Fast-fail threshold for CDR-energy compute: skip CDR-energy ONLY for
+    # truly pathological structures (E_Rep > 1000 REU = atoms physically
+    # overlapping). Decoupled from E_REP_REJECT because (a) DPO pair
+    # selection needs cdr_energy_per_res populated on *every* candidate to
+    # test Pareto dominance (NaN axes drop the candidate from pair
+    # selection); (b) raw DiffAb outputs routinely have E_Rep in the
+    # 50–300 REU range under refinement_mode=none, which is far above the
+    # rejection threshold but well below "scoring is meaningless". The
+    # 2026-05-25 AAPR canary lost 212/232 candidates to skipped_nan_axes
+    # when fast_fail was hardwired to E_REP_REJECT (commit fixing this).
+    E_REP_FAST_FAIL: float = 1000.0            # REU. CDR-energy compute gate, not a verdict threshold.
     # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
