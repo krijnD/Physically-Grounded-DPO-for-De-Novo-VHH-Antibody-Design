@@ -57,10 +57,10 @@ class Config:
     # ── Biophysics Judge (TNP) ──
     # All three TNP thresholds (PSH, PPC, Compactness) are kept at Gordon et al.
     # 2026 clinical-36-nanobody calibration. ANDD natural-VHH empirical p80
-    # (post sequence-dedup, full arm, n=205) validates two of three:
-    #   - PSH:        empirical p80 = 113.2 [110.4, 115.2] — inside green zone
-    #   - Compactness: empirical p80 =  1.44 [+1.42, +1.47] — inside [0.81, 1.57]
-    #   - PPC:        empirical p80 = 0.498 [+0.37, +1.11] — ABOVE Gordon's 0.39
+    # (post sequence-dedup, none arm, n=218 — J-anchor-fixed) validates two of three:
+    #   - PSH:        empirical p80 = 110.5 [107.4, 116.6] — inside green zone
+    #   - Compactness: empirical p80 =  1.47 [+1.45, +1.51] — inside [0.81, 1.57]
+    #   - PPC:        empirical p80 = 0.550 [+0.34, +1.15] — ABOVE Gordon's 0.39
     # The PPC mismatch is an intentional clinical-vs-natural distribution shift:
     # Gordon's < 0.39 is a pharmacokinetic constraint (in-vivo clearance),
     # not a folding/aggregation metric. Natural PDB VHHs were not selected
@@ -84,15 +84,6 @@ class Config:
     # residues, here additionally divided by N_CDR_residues for scope-
     # invariance (works under CDR-H3-only or multi-CDR π_ref scope).
     #
-    # ⚠️  STALE — NEEDS RECALIBRATION (2026-05-22)
-    # The values below were computed under `--refinement-mode full`
-    # against the J-anchor-truncated GT dataset (parser cap=113, fixed in
-    # commit 5c4f966). Both inputs are now wrong: (1) the GTs were
-    # missing the J-anchor on ~76% of test-split entries, (2) the `full`
-    # regime is no longer in use (see below). Recalibration must rerun
-    # `scripts/judges/slurm/judges_andd.sbatch` on the rebuilt LMDB with
-    # `--refinement-mode none` and replace the values here.
-    #
     # ── REFINEMENT POLICY (2026-05-22) ──
     # Calibration AND AAPR scoring both run `--refinement-mode none`.
     # Rationale from the 2026-05-22 pilot
@@ -104,25 +95,38 @@ class Config:
     # mismatch. With `none` on both sides the thresholds and the AAPR
     # scores live in the same metric space.
     #
-    # ── ORIGINAL CALIBRATION METHODOLOGY (AbDPO Appendix E.1) ──
+    # ── EMPIRICAL CALIBRATION (AbDPO Appendix E.1 methodology) ──
     # Both thresholds = 80th-percentile of the natural ANDD VHH GT
-    # distribution, n=458 after dropping 7 PyRosetta-crash rows. Bootstrap
-    # 95% CIs from 1000 resamples, seed=42. See
-    # scripts/calibration/percentile_analysis.py.
+    # distribution under `--refinement-mode none` on the J-anchor-fixed
+    # LMDB (parser cap=150, commit 5c4f966). Sequence-deduped (220 unique
+    # raw sequences after dropping 7 PyRosetta-crash rows from 465).
+    # Bootstrap 95% CIs from 1000 resamples, seed=42.
+    # See scripts/calibration/percentile_single.py and
+    # docs/calibration/percentiles_none.csv.
     #
-    # Note the per-residue convention: AbDPO Table 4 reports values
-    # SUMMED over CDR-H3 residues; thesis project divides by
-    # N_CDR_residues (mean 33.15 in ANDD full arm) for scope-invariance
-    # across CDR-H3-only ablation and multi-CDR main run. Multiply by
-    # ~33 to recover AbDPO's summed scale for direct paper comparison.
+    # Direction-of-change note (vs old full-mode + truncated):
+    #   E_Rep:    5.746 → 3.271  (stricter — old FastRelax was actually
+    #             ADDING strain on truncated J-anchor cases, not relieving
+    #             it; cf. "7B2P-class FastRelax pathologies".)
+    #   CDR_E:   -0.183 → +2.844 (more permissive — without FastRelax the
+    #             raw GT crystals have positive average CDR energy; this
+    #             is the natural reference. Sits between the old pack-arm
+    #             p80 (+9.7) and old full-arm p80 (-0.18), the expected
+    #             "no-artifact" middle ground.)
     #
-    # Previous (literature-derived, superseded) values:
-    #   CDR_ENERGY_PER_RES_REJECT = -0.2  — misattributed to AbDPO; the
-    #     actual figure was never per-residue in the source.
-    #   E_REP_REJECT = 5.0  — also dropped ~80% of natural ANDD at p80,
-    #     suggesting the 5.0 cap was tuned for a different scoring scope.
-    CDR_ENERGY_PER_RES_REJECT: float = -0.183  # ⚠️ STALE: full-mode p80 on truncated GT. Recalibrate under none-mode + J-anchor-fixed LMDB.
-    E_REP_REJECT: float = 5.746                # ⚠️ STALE: full-mode p80 on truncated GT. Recalibrate under none-mode + J-anchor-fixed LMDB.
+    # Per-residue convention: AbDPO Table 4 reports values SUMMED over
+    # CDR-H3 residues; thesis project divides by N_CDR_residues (mean
+    # 33.15 in ANDD) for scope-invariance across CDR-H3-only ablation
+    # and multi-CDR main run. Multiply by ~33 to recover AbDPO's summed
+    # scale for direct paper comparison.
+    #
+    # Previous (literature-derived / earlier-regime, superseded) values:
+    #   CDR_ENERGY_PER_RES_REJECT = -0.2    (lit, misattributed to AbDPO)
+    #   CDR_ENERGY_PER_RES_REJECT = -0.183  (full-mode, truncated GT)
+    #   E_REP_REJECT = 5.0                  (lit)
+    #   E_REP_REJECT = 5.746                (full-mode, truncated GT)
+    CDR_ENERGY_PER_RES_REJECT: float = +2.844  # REU/residue. none-mode p80, CI [+2.243, +3.210], n=193
+    E_REP_REJECT: float = +3.271               # REU. none-mode p80, CI [+2.881, +4.217], n=220
     # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
     # from unresolved clashes in the bound state) — distinguished from
     # weak-binder rejects so downstream DPO pair selection isn't polluted.
