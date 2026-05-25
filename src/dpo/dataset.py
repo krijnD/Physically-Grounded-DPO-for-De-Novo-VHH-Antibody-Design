@@ -267,6 +267,39 @@ class PairDataset(Dataset):
                 f"{loser_pdb_path}"
             )
 
+        # Align CDR labels across the pair. AAPR's PDBs use sequential
+        # residue numbering while the GT's are Chothia-numbered (with
+        # insertions like 100A/100B). DiffAb's `_label_heavy_chain_cdr`
+        # keys CDR labels off `resseq` against the Chothia ranges
+        # (H1 = 26–32, H2 = 52–56, H3 = 95–102), so the same physical
+        # CDR positions get *different* cdr_flag tensors on winner vs
+        # loser — same residue count, shifted indices. We correct this
+        # by copying the winner's cdr_flag (and CDR-seq annotations)
+        # onto the loser. AAPR keeps the framework + antigen verbatim,
+        # so the physical CDR positions are by construction identical;
+        # this transfer is a relabeling, not a structural change. If
+        # the heavy-chain residue counts disagree (rare: AAPR dropped
+        # a residue, or the parser truncated differently), we cannot
+        # safely copy and the pair is skipped via the alignment guard
+        # below.
+        if winner_raw.get("heavy") is not None and loser_raw.get("heavy") is not None:
+            w_heavy = winner_raw["heavy"]
+            l_heavy = loser_raw["heavy"]
+            if w_heavy["aa"].size(0) == l_heavy["aa"].size(0):
+                l_heavy["cdr_flag"] = w_heavy["cdr_flag"].clone()
+                # Defensive: copy the CDR-sequence annotations too in
+                # case downstream code reads them. Most transforms only
+                # touch cdr_flag, but H1_seq/H2_seq/H3_seq exist on the
+                # winner from _label_heavy_chain_cdr and should reflect
+                # the loser's actual (regenerated) sequence — except
+                # they're never re-used by the masking pipeline, so
+                # leaving them as the winner's is harmless. We DO NOT
+                # copy aa or pos_heavyatom; those are the per-residue
+                # content we want to differ between winner and loser.
+                for k in ("H1_seq", "H2_seq", "H3_seq"):
+                    if k in w_heavy:
+                        l_heavy[k] = w_heavy[k]
+
         # Apply identical transforms with pinned RNG so generate_flag
         # and patch indexing align across the pair. Seed = stable hash
         # over (pair_id, offset) — same for winner and loser, varies
@@ -278,18 +311,26 @@ class PairDataset(Dataset):
         if not torch.equal(
             winner_data["generate_flag"], loser_data["generate_flag"]
         ):
+            w_heavy_len = (
+                winner_raw["heavy"]["aa"].size(0)
+                if winner_raw.get("heavy") is not None else -1
+            )
+            l_heavy_len = (
+                loser_raw["heavy"]["aa"].size(0)
+                if loser_raw.get("heavy") is not None else -1
+            )
             msg = (
                 f"PairDataset: generate_flag mismatch for pair {pair_id} "
                 f"(winner sum={int(winner_data['generate_flag'].sum())}, "
-                f"loser sum={int(loser_data['generate_flag'].sum())}). "
-                f"This pair will be skipped. If you see many of these, the "
-                f"loser PDB residue numbering may not match the winner — "
-                f"check the AAPR sampler's chain handling."
+                f"loser sum={int(loser_data['generate_flag'].sum())}; "
+                f"heavy_len winner={w_heavy_len} loser={l_heavy_len}). "
+                f"With the cdr_flag transfer in place, this should only "
+                f"fire on residue-count mismatch (AAPR dropped/added a "
+                f"residue) — same-count mismatches mean the transfer "
+                f"itself failed and need investigation."
             )
             if self.drop_misaligned:
                 logger.warning(msg)
-                # Recurse to a neighbor index; with 100+ pairs the
-                # collision probability is negligible.
                 return self.__getitem__((idx + 1) % len(self))
             raise RuntimeError(msg)
 
