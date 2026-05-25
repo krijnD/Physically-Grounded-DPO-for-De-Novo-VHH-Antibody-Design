@@ -138,10 +138,18 @@ class Config:
     # 2026-05-25 AAPR canary lost 212/232 candidates to skipped_nan_axes
     # when fast_fail was hardwired to E_REP_REJECT (commit fixing this).
     E_REP_FAST_FAIL: float = 1000.0            # REU. CDR-energy compute gate, not a verdict threshold.
-    # Any |E_cdr| beyond this is non-physical (Rosetta scoring blowup
-    # from unresolved clashes in the bound state) — distinguished from
-    # weak-binder rejects so downstream DPO pair selection isn't polluted.
-    CDR_ENERGY_PATHOLOGICAL: float = 100.0   # REU/residue
+    # Pathological-value sentinel: if |E_cdr| exceeds this, ``score_complex``
+    # nulls the cdr_energy_per_res field and flags ``scoring_failed=True``.
+    # Originally calibrated for full-mode (FastRelax) where GT CDR energies
+    # stay within ±10 REU/residue. In none-mode, raw DiffAb CDR-loop
+    # geometries routinely score in the ±50–500 REU/residue range — these
+    # are NOT scoring blowups, they're physically meaningful indicators of
+    # how poorly a candidate sits in the binding pocket. Setting the
+    # threshold high so the value is preserved for DPO pair selection
+    # (Pareto dominance needs continuous values, not NaN). The 2026-05-25
+    # AAPR canary lost ~130/232 candidates with cdr_energy_per_res=NaN to
+    # this gate; raised to 10000 to disable it for none-mode AAPR runs.
+    CDR_ENERGY_PATHOLOGICAL: float = 10000.0   # REU/residue. Effectively off for none-mode.
     ROSETTA_INTERFACE: str = "H_A"  # Chain interface for E_Rep selector
     CCD_OUTER_CYCLES: int = 1      # AbDPO-specified LoopMover_Refine_CCD param
     CCD_MAX_INNER_CYCLES: int = 10  # AbDPO-specified LoopMover_Refine_CCD param
