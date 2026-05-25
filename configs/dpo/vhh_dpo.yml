@@ -1,0 +1,148 @@
+# VHH Diffusion-DPO on the J-anchor-fixed fine-tune (seed42_jfix).
+#
+# Inputs assumed present:
+#   * π_ref checkpoint at
+#       runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+#     (29 MB, multi-CDR, post-J-anchor-fix LMDB; see
+#      docs/post_jfix_dpo_handoff.md §1.)
+#   * Pair parquet at
+#       data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet
+#     (192 pairs across 25 GTs; selected by scripts/dpo/select_pareto_pairs.py).
+#   * Test-split GT structures already in the LMDB at
+#       data/processed/vhh_ft/   (the same LMDB the fine-tune reads).
+#
+# This config is consumed by scripts/dpo/train_dpo.py via DiffAb's
+# load_config (single yaml.safe_load, no merge). Mirror the model
+# block from configs/diffab_ft/vhh_ft.yml so the architecture matches
+# the π_ref checkpoint we initialize π_θ from.
+#
+# Locked decisions (see docs/dpo_training_context.md §"Locked"):
+#   * π_θ initialized from π_ref weights; both share architecture.
+#   * π_ref frozen end-to-end (handled in the trainer, not the config).
+#   * Multi-CDR scope (H1+H2+H3) via mask_multiple_cdrs — same as the
+#     fine-tune. AAPR sampling already used this mask.
+#   * EMA on π_θ with decay 0.999.
+#   * Composite loss across rot/pos/seq channels with fine-tune weights.
+#
+# Open hyperparameters worth ablating (see §"Open" in the design doc):
+#   * dpo.beta_dpo  — temperature; start 0.1 per AbDPO Table 1.
+#   * train.optimizer.lr — start 1e-5 (5× smaller than fine-tune lr=5e-5).
+#   * dpo.aggregation — "residue" (AbDPO Eq. 8, default) vs "sequence"
+#                       (Wallace scalar DPO) as ablation.
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  # Inherit fine-tune loss weights — the composite per-residue loss
+  # uses the same w_rot/w_pos/w_seq so the DPO loss is computed in the
+  # same units π_ref was selected against.
+  loss_weights:
+    rot: 1.0
+    pos: 1.0
+    seq: 1.0
+  # 5000 iters / batch_size 4 → ~1250 epochs over 192 pairs. AbDPO
+  # converges in 1-3k iters on similar-sized data; this leaves headroom
+  # for early-stop to fire well before max_iters.
+  max_iters: 5000
+  val_freq: 100
+  batch_size: 4
+  seed: 42
+  max_grad_norm: 1.0
+  ema_decay: 0.999
+  # At val_freq=100 patience=10 → 1000 iters of no val improvement.
+  # DPO loss is noisy on tiny val sets (~25 pairs) so be a bit lenient.
+  early_stop_patience: 10
+  save_top_k: 3
+  optimizer:
+    type: adam
+    # 1e-5 — 5× smaller than the fine-tune lr (5e-5). DPO is a small
+    # perturbation of an already-converged model; AbDPO §4.5 uses 1e-5.
+    lr: 1.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-7
+  # No LR warmup — DPO starts from a converged checkpoint, no Adam
+  # second-moment reset trauma to recover from. The fine-tune needed
+  # warmup because its init was the upstream codesign_multicdrs
+  # checkpoint with a very different data distribution; here π_θ and
+  # the data distribution match because π_θ = π_ref at iter 0.
+
+# ── DPO-specific block ────────────────────────────────────────────────
+dpo:
+  # Reference policy — frozen, used to compute baseline log-prob ratios.
+  pi_ref_checkpoint: runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+
+  # Pair training data (output of scripts/dpo/select_pareto_pairs.py).
+  pair_parquet: data/aapr/ftseed42_jfix_K8_20260525/dpo/pairs.parquet
+
+  # DPO temperature. AbDPO Table 1 uses 0.1 as the headline value;
+  # Wallace et al. sweep 0.05-0.5. Treat as the primary ablation knob.
+  beta_dpo: 0.1
+
+  # Diffusion horizon T — multiplies δ in the DPO loss (Wallace Eq. 8).
+  # Must equal model.diffusion.num_steps; the trainer asserts this.
+  num_timesteps: 100
+
+  # Loss aggregation:
+  #   "residue"  → AbDPO Eq. 8: log σ per residue, summed per pair.
+  #                Recommended default; AbDPO Fig. 4 shows this
+  #                converges much better than the sequence-level form.
+  #   "sequence" → Wallace-style: sum δ over residues per pair first,
+  #                then log σ. Provided as an ablation toggle.
+  aggregation: residue
+
+  # Train/val split — GT-stratified, holding out N GTs entirely so no
+  # pair leaks across the boundary (different pairs from the same GT
+  # share the same antigen+framework context). With 25 GTs and ~7.7
+  # pairs/GT, 3 holdout GTs ≈ 23 val pairs / 169 train pairs.
+  val_gt_holdout: 3
+  val_split_seed: 42
+
+  # Defensive: drop pairs whose post-transform generate_flag differs
+  # between winner and loser. Should be 0 with the j-fixed pipeline,
+  # but exposed so we can switch to "raise" if a regression slips in.
+  drop_misaligned: true
+
+  # Per-epoch noise variation. The DPO loss seeds the masking
+  # transforms per pair (so winner+loser get the same mask) but
+  # combining the per-pair seed with a per-epoch offset lets us sweep
+  # CDR subsets across epochs. 0 → fixed across the run; set to
+  # `epoch_index` in the trainer for true variation.
+  pair_seed_offset: 0
+
+# Dataset block — used to construct the underlying VHHANDDDataset
+# whose LMDB the PairDataset reads winners from. We point at the
+# 'test' split because the pair parquet's GTs are test-split entries
+# (post-J-anchor-fix AAPR was run on test). The trainer ignores the
+# 'val' dataset block — DPO's val pool is GT-stratified inside the
+# pair parquet, not derived from cluster_splits.json.
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/vhh_ft
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: test
+    heavy_max_resseq: 150
+    # The transforms applied to BOTH winner and loser inside
+    # PairDataset.__getitem__. Mirrors the fine-tune's train pipeline
+    # so π_θ sees the same input distribution it was fine-tuned on.
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor
