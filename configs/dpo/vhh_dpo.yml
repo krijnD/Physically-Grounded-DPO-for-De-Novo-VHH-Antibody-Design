@@ -111,6 +111,17 @@ dpo:
   # pairs/GT, 3 holdout GTs ≈ 23 val pairs / 169 train pairs.
   val_gt_holdout: 3
   val_split_seed: 42
+  # Optional: explicit list of bare-PDB GT IDs to use as the val pool,
+  # overriding val_gt_holdout / val_split_seed. Recommended for the
+  # combined train+val AAPR pair pool: list the original fine-tune
+  # val-split GTs here so the DPO val set has L_w_ref > 0 (symmetric
+  # signal, cleaner early-stop). The DPO train pool then gets all the
+  # train-split GTs (loser-driven signal — fine for the gradient,
+  # noisier for val-loss interpretability). Example:
+  # val_gt_ids:
+  #   - 7abc   # one of the 34 fine-tune val GTs
+  #   - 8xyz   # ...
+  val_gt_ids: null
 
   # Defensive: drop pairs whose post-transform generate_flag differs
   # between winner and loser. Should be 0 with the j-fixed pipeline,

@@ -309,32 +309,21 @@ def main() -> int:
 
     # ── Pair datasets (train / val) ─────────────────────────────────
     logger.info("Building DPO pair datasets...")
-    train_pairs = PairDataset(
+    _pair_kwargs = dict(
         pairs_parquet=config.dpo.pair_parquet,
         base_dataset=base_dataset,
         transform=transform,
-        split="train",
         val_split_seed=int(config.dpo.get("val_split_seed", 42)),
         val_gt_holdout=int(config.dpo.get("val_gt_holdout", 3)),
+        val_gt_ids=config.dpo.get("val_gt_ids", None),
         heavy_max_resseq=int(
             config.dataset.train.get("heavy_max_resseq", 150)
         ),
         pair_seed_offset=int(config.dpo.get("pair_seed_offset", 0)),
         drop_misaligned=bool(config.dpo.get("drop_misaligned", True)),
     )
-    val_pairs = PairDataset(
-        pairs_parquet=config.dpo.pair_parquet,
-        base_dataset=base_dataset,
-        transform=transform,
-        split="val",
-        val_split_seed=int(config.dpo.get("val_split_seed", 42)),
-        val_gt_holdout=int(config.dpo.get("val_gt_holdout", 3)),
-        heavy_max_resseq=int(
-            config.dataset.train.get("heavy_max_resseq", 150)
-        ),
-        pair_seed_offset=int(config.dpo.get("pair_seed_offset", 0)),
-        drop_misaligned=bool(config.dpo.get("drop_misaligned", True)),
-    )
+    train_pairs = PairDataset(split="train", **_pair_kwargs)
+    val_pairs = PairDataset(split="val", **_pair_kwargs)
     logger.info(
         "Train pairs: %d  |  Val pairs: %d", len(train_pairs), len(val_pairs),
     )

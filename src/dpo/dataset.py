@@ -101,7 +101,17 @@ class PairDataset(Dataset):
         the 192-pair canary's ~25 GTs and ~7.7 pairs/GT, this yields
         roughly 23 val pairs / 169 train pairs (~12% val), which
         matches the design doc's "5-fold CV reasonable for 58 pairs"
-        guidance scaled up.
+        guidance scaled up. **Ignored if ``val_gt_ids`` is given.**
+    val_gt_ids
+        Optional explicit list of bare-PDB GT IDs to use as the val
+        set. Overrides ``val_gt_holdout``/``val_split_seed`` — useful
+        when you want a non-random, semantically-meaningful val pool
+        (e.g., for a combined train+val AAPR run, use the original
+        fine-tune val-split GTs as DPO val so ``L_w_ref > 0`` and
+        the val DPO loss has the symmetric structure DPO assumes,
+        making early-stop decisions cleaner). Unknown IDs are
+        ignored with a warning; if no IDs survive the filter, we
+        fall back to the random ``val_gt_holdout`` path.
     heavy_max_resseq
         J-anchor cap forwarded to the loser parser. Default 150 (the
         post-J-anchor-fix value).
@@ -123,6 +133,7 @@ class PairDataset(Dataset):
         split: str = "train",
         val_split_seed: int = 42,
         val_gt_holdout: int = 3,
+        val_gt_ids: Optional[Sequence[str]] = None,
         heavy_max_resseq: int = DEFAULT_HEAVY_MAX_RESSEQ,
         pair_seed_offset: int = 0,
         drop_misaligned: bool = True,
@@ -169,12 +180,41 @@ class PairDataset(Dataset):
                 "pairs parquet's GTs.", n_dropped_no_gt,
             )
 
-        # GT-stratified train/val split.
+        # GT-stratified train/val split — explicit list takes priority,
+        # otherwise random holdout.
         all_gts = sorted(df["gt_complex_id"].unique().tolist())
-        rng = random.Random(val_split_seed)
-        shuffled = list(all_gts)
-        rng.shuffle(shuffled)
-        val_gts = set(shuffled[: int(val_gt_holdout)])
+        val_gts: set[str]
+        split_mode: str
+        if val_gt_ids:
+            requested = set(map(str, val_gt_ids))
+            present = set(all_gts)
+            val_gts = requested & present
+            missing = requested - present
+            if missing:
+                logger.warning(
+                    "PairDataset: %d val_gt_ids not present in the pairs "
+                    "parquet (sample: %s). Using %d that are present.",
+                    len(missing), sorted(missing)[:5], len(val_gts),
+                )
+            if not val_gts:
+                logger.warning(
+                    "PairDataset: val_gt_ids matched 0 GTs; falling back "
+                    "to random holdout of %d GTs (seed=%d).",
+                    val_gt_holdout, val_split_seed,
+                )
+                rng = random.Random(val_split_seed)
+                shuffled = list(all_gts)
+                rng.shuffle(shuffled)
+                val_gts = set(shuffled[: int(val_gt_holdout)])
+                split_mode = f"random (fallback, holdout={val_gt_holdout})"
+            else:
+                split_mode = f"explicit (val_gt_ids n={len(val_gts)})"
+        else:
+            rng = random.Random(val_split_seed)
+            shuffled = list(all_gts)
+            rng.shuffle(shuffled)
+            val_gts = set(shuffled[: int(val_gt_holdout)])
+            split_mode = f"random (holdout={val_gt_holdout}, seed={val_split_seed})"
 
         if split == "val":
             df = df[df["gt_complex_id"].isin(val_gts)].reset_index(drop=True)
@@ -190,10 +230,8 @@ class PairDataset(Dataset):
 
         self.pairs_df = df
         logger.info(
-            "PairDataset[%s]: %d pairs across %d GTs "
-            "(val_gt_holdout=%d, val_split_seed=%d).",
-            split, len(df), df["gt_complex_id"].nunique(),
-            val_gt_holdout, val_split_seed,
+            "PairDataset[%s]: %d pairs across %d GTs (split_mode=%s).",
+            split, len(df), df["gt_complex_id"].nunique(), split_mode,
         )
         # Cache of {pair_idx: (winner_data, loser_data)} — populated on
         # first access if caching is enabled. Disabled by default: with
@@ -393,6 +431,7 @@ def build_pair_dataset_from_config(
         split=split,
         val_split_seed=int(dpo.get("val_split_seed", 42)),
         val_gt_holdout=int(dpo.get("val_gt_holdout", 3)),
+        val_gt_ids=dpo.get("val_gt_ids", None),
         heavy_max_resseq=int(
             cfg.dataset.train.get("heavy_max_resseq", DEFAULT_HEAVY_MAX_RESSEQ)
         ),
