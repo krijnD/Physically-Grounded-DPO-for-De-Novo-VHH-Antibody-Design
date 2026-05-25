@@ -267,38 +267,67 @@ class PairDataset(Dataset):
                 f"{loser_pdb_path}"
             )
 
-        # Align CDR labels across the pair. AAPR's PDBs use sequential
-        # residue numbering while the GT's are Chothia-numbered (with
-        # insertions like 100A/100B). DiffAb's `_label_heavy_chain_cdr`
-        # keys CDR labels off `resseq` against the Chothia ranges
-        # (H1 = 26–32, H2 = 52–56, H3 = 95–102), so the same physical
-        # CDR positions get *different* cdr_flag tensors on winner vs
-        # loser — same residue count, shifted indices. We correct this
-        # by copying the winner's cdr_flag (and CDR-seq annotations)
-        # onto the loser. AAPR keeps the framework + antigen verbatim,
-        # so the physical CDR positions are by construction identical;
-        # this transfer is a relabeling, not a structural change. If
-        # the heavy-chain residue counts disagree (rare: AAPR dropped
-        # a residue, or the parser truncated differently), we cannot
-        # safely copy and the pair is skipped via the alignment guard
-        # below.
+        # Align the pair so the masking pipeline produces byte-identical
+        # generate_flag / patch_idx between winner and loser. Three
+        # corrections, all on the loser (winner is canonical):
+        #
+        # (a) cdr_flag — AAPR PDBs are sequentially numbered, GTs are
+        #     Chothia-numbered; `_label_heavy_chain_cdr` keys CDR labels
+        #     off resseq against Chothia ranges, so the same physical
+        #     CDR gets shifted cdr_flag indices. Copy winner's cdr_flag
+        #     onto the loser to relabel consistently.
+        # (b) Framework positions — `PatchAroundAnchor` ranks residues
+        #     by `cdist(pos_alpha, anchor_points)` and picks the top-128
+        #     closest. Even sub-Å perturbations in framework positions
+        #     (from AAPR rounding, write/read precision) shift the
+        #     dist_anchor ranking and break topk ties differently,
+        #     yielding different patches on the same physical structure.
+        #     AAPR is *intended* to carry the framework verbatim from
+        #     the GT, so byte-copying the winner's framework positions
+        #     onto the loser is a no-op in the ideal case and a
+        #     precision-correction in the realistic case.
+        # (c) Antigen positions — same reasoning as (b); AAPR carries
+        #     antigen verbatim.
+        #
+        # CRITICAL: we do NOT copy `aa` or the CDR-region positions.
+        # Those are the per-residue content the DPO loss is supposed
+        # to discriminate between. The copy is restricted to:
+        #   * cdr_flag (relabeling, no structural change)
+        #   * pos_heavyatom / mask_heavyatom at framework positions
+        #     (where cdr_flag == 0)
+        #   * antigen pos_heavyatom / mask_heavyatom (whole antigen)
+        #
+        # If the heavy-chain residue counts disagree (AAPR dropped/
+        # added a residue), copying is unsafe and we let the alignment
+        # guard below skip the pair.
         if winner_raw.get("heavy") is not None and loser_raw.get("heavy") is not None:
             w_heavy = winner_raw["heavy"]
             l_heavy = loser_raw["heavy"]
             if w_heavy["aa"].size(0) == l_heavy["aa"].size(0):
+                # (a) cdr_flag transfer
                 l_heavy["cdr_flag"] = w_heavy["cdr_flag"].clone()
-                # Defensive: copy the CDR-sequence annotations too in
-                # case downstream code reads them. Most transforms only
-                # touch cdr_flag, but H1_seq/H2_seq/H3_seq exist on the
-                # winner from _label_heavy_chain_cdr and should reflect
-                # the loser's actual (regenerated) sequence — except
-                # they're never re-used by the masking pipeline, so
-                # leaving them as the winner's is harmless. We DO NOT
-                # copy aa or pos_heavyatom; those are the per-residue
-                # content we want to differ between winner and loser.
                 for k in ("H1_seq", "H2_seq", "H3_seq"):
                     if k in w_heavy:
                         l_heavy[k] = w_heavy[k]
+                # (b) framework position transfer — clone first so we
+                # don't mutate the freshly-parsed loser tensor in place
+                # (paranoid: it isn't shared, but the cost is trivial).
+                fw_mask = (w_heavy["cdr_flag"] == 0)
+                l_heavy["pos_heavyatom"] = l_heavy["pos_heavyatom"].clone()
+                l_heavy["mask_heavyatom"] = l_heavy["mask_heavyatom"].clone()
+                l_heavy["pos_heavyatom"][fw_mask] = (
+                    w_heavy["pos_heavyatom"][fw_mask].clone()
+                )
+                l_heavy["mask_heavyatom"][fw_mask] = (
+                    w_heavy["mask_heavyatom"][fw_mask].clone()
+                )
+        # (c) antigen transfer
+        if winner_raw.get("antigen") is not None and loser_raw.get("antigen") is not None:
+            w_ag = winner_raw["antigen"]
+            l_ag = loser_raw["antigen"]
+            if w_ag["aa"].size(0) == l_ag["aa"].size(0):
+                l_ag["pos_heavyatom"] = w_ag["pos_heavyatom"].clone()
+                l_ag["mask_heavyatom"] = w_ag["mask_heavyatom"].clone()
 
         # Apply identical transforms with pinned RNG so generate_flag
         # and patch indexing align across the pair. Seed = stable hash
@@ -321,13 +350,15 @@ class PairDataset(Dataset):
             )
             msg = (
                 f"PairDataset: generate_flag mismatch for pair {pair_id} "
-                f"(winner sum={int(winner_data['generate_flag'].sum())}, "
-                f"loser sum={int(loser_data['generate_flag'].sum())}; "
-                f"heavy_len winner={w_heavy_len} loser={l_heavy_len}). "
-                f"With the cdr_flag transfer in place, this should only "
-                f"fire on residue-count mismatch (AAPR dropped/added a "
-                f"residue) — same-count mismatches mean the transfer "
-                f"itself failed and need investigation."
+                f"(winner sum={int(winner_data['generate_flag'].sum())} "
+                f"len={winner_data['generate_flag'].size(0)}, "
+                f"loser sum={int(loser_data['generate_flag'].sum())} "
+                f"len={loser_data['generate_flag'].size(0)}; "
+                f"heavy_len pre-transform winner={w_heavy_len} "
+                f"loser={l_heavy_len}). With cdr_flag + framework + "
+                f"antigen position transfers in place, this should "
+                f"only fire on residue-count mismatch (AAPR dropped/"
+                f"added a residue)."
             )
             if self.drop_misaligned:
                 logger.warning(msg)
