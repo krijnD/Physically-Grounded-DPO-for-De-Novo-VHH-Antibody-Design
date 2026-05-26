@@ -46,6 +46,9 @@ from torch.utils.data._utils.collate import default_collate
 
 # DiffAb internals — third_party/diffab must be on sys.path before import.
 from diffab.utils.data import PaddingCollate
+from diffab.utils.protein.constants import BBHeavyAtom, Fragment
+from diffab.utils.transforms._base import _mask_select_data
+from diffab.utils.transforms.patch import PatchAroundAnchor
 
 # Our J-anchor-fixed parser (mirrors DiffAb's preprocess + raises the
 # heavy-chain max_resseq from 113 → 150). Used for the loser side since
@@ -329,13 +332,37 @@ class PairDataset(Dataset):
                 l_ag["pos_heavyatom"] = w_ag["pos_heavyatom"].clone()
                 l_ag["mask_heavyatom"] = w_ag["mask_heavyatom"].clone()
 
-        # Apply identical transforms with pinned RNG so generate_flag
-        # and patch indexing align across the pair. Seed = stable hash
-        # over (pair_id, offset) — same for winner and loser, varies
-        # across pairs/epochs.
+        # Apply masking + merge + patch with shared patch_mask across
+        # the pair. Naively running self.transform on each side breaks
+        # alignment at the patch step: PatchAroundAnchor ranks residues
+        # by `cdist(positions, anchor_points)` and picks the top-128,
+        # but the CDR positions necessarily differ between winner (GT)
+        # and loser (AAPR) — that's the DPO signal we want to keep —
+        # so the top-128 boundary resolves differently and the
+        # patch_mask ends up with different residue subsets (typically
+        # ±1 residue). The aligned variant below computes patch_mask
+        # on the winner side only and applies it to both, preserving
+        # per-residue alignment for the AbDPO loss while keeping the
+        # loser's actual aa/pos at CDR positions intact.
         pair_seed = self._pair_seed(pair_id)
-        winner_data = self._apply_transforms(winner_raw, pair_seed)
-        loser_data = self._apply_transforms(loser_raw, pair_seed)
+        winner_data, loser_data = self._apply_pair_transforms(
+            winner_raw, loser_raw, pair_seed,
+        )
+
+        if winner_data is None or loser_data is None:
+            # _apply_pair_transforms returned a skip signal — post-merge
+            # tensor lengths disagreed (heavy or antigen residue counts
+            # differed between winner and loser even after our position
+            # transfers tried to align them). Move to the next pair.
+            msg = (
+                f"PairDataset: pre-patch length mismatch for pair {pair_id} "
+                f"(skipping). Likely cause: AAPR PDB has a different number "
+                f"of heavy or antigen residues than the GT."
+            )
+            if self.drop_misaligned:
+                logger.warning(msg)
+                return self.__getitem__((idx + 1) % len(self))
+            raise RuntimeError(msg)
 
         if not torch.equal(
             winner_data["generate_flag"], loser_data["generate_flag"]
@@ -393,19 +420,173 @@ class PairDataset(Dataset):
     def _apply_transforms(self, structure: dict, seed: int) -> dict:
         """Run the masking pipeline under a pinned RNG.
 
-        Pinning ``random.seed`` covers ``MaskMultipleCDRs.mask_for_one_chain_``
-        (which uses ``random.randint``/``random.shuffle``/``random.choice``)
-        and ``random_shrink_extend``. We also pin ``torch.manual_seed``
-        defensively for any ``torch.*`` random op a downstream transform
-        might add.
+        Kept for any single-side use (e.g., test utilities). The pair
+        pipeline uses :meth:`_apply_pair_transforms` instead because it
+        needs a single shared ``patch_mask`` across (winner, loser).
         """
         random.seed(seed)
         torch.manual_seed(seed)
-        # `transform` is a torchvision.Compose; calling it returns a
-        # new dict (transforms mutate in-place but the pipeline already
-        # deep-modifies the structure). The deep-copy at the call site
-        # protects the LMDB-backed winner.
         return self.transform(structure)
+
+    def _apply_pair_transforms(
+        self, winner_raw: dict, loser_raw: dict, seed: int,
+    ) -> tuple[dict, dict]:
+        """Apply masking + merge + patch to a pair with shared patch_mask.
+
+        Steps:
+          1. Decompose ``self.transform`` (Compose) into the pre-patch
+             transforms (MaskMultipleCDRs, MergeChains) and the patch
+             transform (PatchAroundAnchor).
+          2. Run pre-patch transforms on both sides under the same
+             seeded RNG. With cdr_flag and framework positions already
+             aligned, ``MaskMultipleCDRs`` produces the same
+             generate_flag + anchor_flag on both, and ``MergeChains``
+             is deterministic, so the post-merge tensors have the same
+             shape and the same flags. They differ only in aa codes at
+             CDR positions (and pos_heavyatom at CDR positions, since
+             those are intentionally not copied).
+          3. Compute the patch on the *winner* using PatchAroundAnchor's
+             own algorithm. Capture ``patch_mask`` and ``origin``.
+          4. Apply the same ``patch_mask`` and centering origin to the
+             loser. The loser keeps its own aa codes and CDR positions
+             (the DPO signal); only the selection-and-centering of
+             residues is borrowed from the winner.
+
+        If the pre-patch merged tensors have different lengths (which
+        means the heavy or antigen residue counts disagreed and the
+        position-transfer at __getitem__ couldn't fix it), return
+        ``(None, None)`` to signal an unrecoverable misalignment; the
+        caller skips the pair.
+        """
+        # Locate the patch transform inside the Compose. We assume the
+        # canonical order [MaskMultipleCDRs, MergeChains,
+        # PatchAroundAnchor] — assert it so a config drift fails
+        # loudly rather than silently producing misaligned pairs.
+        compose_transforms = list(self.transform.transforms)
+        patch_t = None
+        pre_patch_ts = []
+        for t in compose_transforms:
+            if isinstance(t, PatchAroundAnchor):
+                patch_t = t
+            else:
+                if patch_t is not None:
+                    raise RuntimeError(
+                        "PairDataset expects PatchAroundAnchor to be the "
+                        "LAST transform in the pipeline; got transforms "
+                        f"after it: {type(t).__name__}."
+                    )
+                pre_patch_ts.append(t)
+        if patch_t is None:
+            raise RuntimeError(
+                "PairDataset expects a PatchAroundAnchor transform in the "
+                "pipeline; found none. Update configs/dpo/vhh_dpo.yml's "
+                "dataset.train.transform to include 'patch_around_anchor'."
+            )
+
+        # Pre-patch transforms on both, same RNG seed → same masks.
+        random.seed(seed); torch.manual_seed(seed)
+        winner_merged = winner_raw
+        for t in pre_patch_ts:
+            winner_merged = t(winner_merged)
+
+        random.seed(seed); torch.manual_seed(seed)
+        loser_merged = loser_raw
+        for t in pre_patch_ts:
+            loser_merged = t(loser_merged)
+
+        if winner_merged["aa"].size(0) != loser_merged["aa"].size(0):
+            # Heavy/antigen residue-count mismatch survived the
+            # position-transfer at __getitem__. Cannot patch with a
+            # shared mask. Signal skip.
+            return None, None
+
+        # Custom patch computation — mirrors PatchAroundAnchor.__call__
+        # but exposes (patch_mask, origin) so we can apply them to the
+        # loser as well. We use the WINNER's positions to compute
+        # dist_anchor, so the topk selection is the same for both.
+        patch_mask, origin = self._compute_patch_on_winner(
+            winner_merged, patch_t,
+        )
+
+        winner_data = self._apply_patch(winner_merged, patch_mask, origin)
+        loser_data = self._apply_patch(loser_merged, patch_mask, origin)
+        return winner_data, loser_data
+
+    @staticmethod
+    def _compute_patch_on_winner(
+        data: dict, patch_t: PatchAroundAnchor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Mirror of PatchAroundAnchor's mask-construction logic.
+
+        Returns ``(patch_mask, origin)``. The mask is True at residues
+        that survive the patch; the origin is the centering point
+        (anchor mean, or the antibody centroid in the no-anchor case).
+        """
+        anchor_flag = data["anchor_flag"]
+        anchor_points = data["pos_heavyatom"][anchor_flag, BBHeavyAtom.CA]
+        antigen_mask = (data["fragment_type"] == Fragment.Antigen)
+        antibody_mask = torch.logical_not(antigen_mask)
+
+        if anchor_flag.sum().item() == 0:
+            # Full-antibody-Fv design (no anchor → no antigen-side
+            # selection). Patch is the whole antibody; origin is the
+            # antibody Cα centroid.
+            patch_mask = antibody_mask.clone()
+            origin = data["pos_heavyatom"][antibody_mask, BBHeavyAtom.CA].mean(dim=0)
+            return patch_mask, origin
+
+        pos_alpha = data["pos_heavyatom"][:, BBHeavyAtom.CA]
+        dist_anchor = torch.cdist(pos_alpha, anchor_points).min(dim=1)[0]
+
+        initial_patch_idx = torch.topk(
+            dist_anchor,
+            k=min(patch_t.initial_patch_size, dist_anchor.size(0)),
+            largest=False,
+        )[1]
+        dist_anchor_antigen = dist_anchor.masked_fill(
+            mask=antibody_mask, value=float("+inf"),
+        )
+        antigen_patch_idx = torch.topk(
+            dist_anchor_antigen,
+            k=min(patch_t.antigen_size, antigen_mask.sum().item()),
+            largest=False, sorted=True,
+        )[1]
+
+        patch_mask = torch.logical_or(
+            data["generate_flag"], data["anchor_flag"],
+        ).clone()  # clone so we don't mutate the data dict's tensor
+        patch_mask[initial_patch_idx] = True
+        patch_mask[antigen_patch_idx] = True
+
+        origin = anchor_points.mean(dim=0)
+        return patch_mask, origin
+
+    @staticmethod
+    def _apply_patch(
+        data: dict, patch_mask: torch.Tensor, origin: torch.Tensor,
+    ) -> dict:
+        """Apply a precomputed patch_mask + centering to a merged dict.
+
+        Matches PatchAroundAnchor's output schema (sets ``origin`` and
+        ``patch_idx`` on the returned dict). Note we re-compute
+        ``patch_idx`` from ``patch_mask`` rather than borrowing it from
+        the winner — they're equivalent since patch_mask is shared,
+        but constructing it here keeps the dict self-consistent.
+        """
+        patch_idx = torch.arange(0, patch_mask.shape[0])[patch_mask]
+        data_patch = _mask_select_data(data, patch_mask)
+
+        origin_reshaped = origin.reshape(1, 1, 3)
+        data_patch["pos_heavyatom"] = (
+            data_patch["pos_heavyatom"] - origin_reshaped
+        )
+        data_patch["pos_heavyatom"] = (
+            data_patch["pos_heavyatom"]
+            * data_patch["mask_heavyatom"][:, :, None]
+        )
+        data_patch["origin"] = origin.reshape(3)
+        data_patch["patch_idx"] = patch_idx
+        return data_patch
 
     def _pair_seed(self, pair_id: str) -> int:
         """Stable per-pair seed, shifted by offset.
