@@ -443,6 +443,19 @@ def main() -> int:
     loss_weights = dict(config.train.loss_weights)
     beta_dpo = float(config.dpo.beta_dpo)
     aggregation = str(config.dpo.get("aggregation", "residue"))
+    # eval_mode_theta: put π_θ into .eval() during DPO training. The
+    # default is True because keeping π_θ in .train() (dropout active)
+    # while π_ref is in .eval() (dropout off) creates an asymmetric
+    # baseline at iter 1 — observed: L_l_θ - L_l_ref ≈ +2.3 even with
+    # identical weights, because the AAPR inputs are OOD for the model
+    # and dropout amplifies the response. This produces a fake
+    # +margin that the DPO loss chases instead of learning real
+    # preferences. Setting π_θ to .eval() eliminates the asymmetry at
+    # root: at iter 1 we get clean L_w_θ == L_w_ref and L_l_θ ==
+    # L_l_ref (up to floating-point noise). We lose dropout's
+    # regularization, but for DPO (a small perturbation off a
+    # converged model on ~1300 pairs) this is the right trade.
+    eval_mode_theta = bool(config.dpo.get("eval_mode_theta", True))
     topk = TopKCheckpointer(ckpt_dir, k=int(config.train.get("save_top_k", 3)))
 
     def _run_dpo_step(batch_dict: dict, *, training: bool) -> dict:
@@ -497,7 +510,16 @@ def main() -> int:
 
     def _step(it: int) -> dict:
         t0 = current_milli_time()
-        model_theta.train()
+        # eval_mode_theta=True keeps π_θ in eval() during the train
+        # step so dropout doesn't introduce stochasticity that π_ref
+        # (frozen + eval) doesn't see — see comment at the flag def.
+        # Parameter updates still happen normally; only the forward-pass
+        # noise from dropout is suppressed. EMA tracks parameter values,
+        # so this doesn't affect ema_theta's updates.
+        if eval_mode_theta:
+            model_theta.eval()
+        else:
+            model_theta.train()
         batch_dict = next(train_iterator)
 
         loss, diag = _run_dpo_step(batch_dict, training=True)
@@ -570,8 +592,10 @@ def main() -> int:
         )
     logger.info(
         "Starting DPO training: iters %d → %d  |  val every %d  |  "
-        "β=%.3f  |  T=%d  |  aggregation=%s  |  patience=%d",
+        "β=%.3f  |  T=%d  |  aggregation=%s  |  patience=%d  |  "
+        "grad_clip=%.2f  |  π_θ mode=%s",
         it_first, max_iters, val_freq, beta_dpo, T, aggregation, patience,
+        grad_clip, "eval" if eval_mode_theta else "train",
     )
     t_train_start = time.time()
 

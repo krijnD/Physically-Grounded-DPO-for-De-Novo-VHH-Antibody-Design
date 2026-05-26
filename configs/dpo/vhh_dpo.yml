@@ -65,7 +65,11 @@ train:
   val_freq: 100
   batch_size: 4
   seed: 42
-  max_grad_norm: 1.0
+  # Tighter than the fine-tune's 1.0. The residue-level AbDPO loss
+  # with β·T = 5 (0.05 × 100) can still produce huge gradients on
+  # outlier pairs (observed 10k+ raw grad_norms in the canary run);
+  # 0.5 cap dampens those spikes more aggressively.
+  max_grad_norm: 0.5
   ema_decay: 0.999
   # At val_freq=100 patience=10 → 1000 iters of no val improvement.
   # DPO loss is noisy on tiny val sets (~25 pairs) so be a bit lenient.
@@ -102,8 +106,13 @@ dpo:
   pair_parquet: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs.parquet
 
   # DPO temperature. AbDPO Table 1 uses 0.1 as the headline value;
-  # Wallace et al. sweep 0.05-0.5. Treat as the primary ablation knob.
-  beta_dpo: 0.1
+  # Wallace et al. sweep 0.05-0.5. Lowered from 0.1 to 0.05 after the
+  # first canary run showed catastrophic destabilization at 0.1:
+  # val DPO loss climbed from 12.5 (iter 200, best) to 18 (iter 1100)
+  # while train loss oscillated 5-60. With β·T = 0.05 × 100 = 5
+  # (vs 10 before), gradient magnitudes drop ~2x and the per-residue
+  # logsigmoid penalties become less extreme for outlier residues.
+  beta_dpo: 0.05
 
   # Diffusion horizon T — multiplies δ in the DPO loss (Wallace Eq. 8).
   # Must equal model.diffusion.num_steps; the trainer asserts this.
@@ -116,6 +125,21 @@ dpo:
   #   "sequence" → Wallace-style: sum δ over residues per pair first,
   #                then log σ. Provided as an ablation toggle.
   aggregation: residue
+
+  # Put π_θ in .eval() mode during DPO training. Default true.
+  # Rationale: keeping π_θ in .train() activates dropout in the
+  # policy, but π_ref is permanently in .eval() (no dropout). At
+  # iter 1 with π_θ == π_ref, this asymmetry creates a fake baseline
+  # gap on the loser side (observed: L_l_θ − L_l_ref ≈ +2.3 at iter 1
+  # in the canary run, vs ~0.13 on the winner side). The DPO loss
+  # then chases that fake +margin instead of learning real
+  # preferences. Setting π_θ to eval gives clean iter-1 baselines
+  # (L_w_θ == L_w_ref, L_l_θ == L_l_ref) and isolates the DPO signal.
+  # We lose dropout regularization, but DPO is a small perturbation
+  # off a converged π_ref on ~1300 pairs — overfitting risk is
+  # already low. Set to false to recover the previous behaviour for
+  # ablation comparisons.
+  eval_mode_theta: true
 
   # Train/val split — GT-stratified, holding out N GTs entirely so no
   # pair leaks across the boundary (different pairs from the same GT
