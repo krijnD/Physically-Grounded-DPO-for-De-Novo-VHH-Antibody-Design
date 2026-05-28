@@ -18,8 +18,13 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "third_party" / "diffab"))
 
 from Bio.PDB import PDBParser  # type: ignore
+from diffab.datasets import get_dataset  # noqa: E402
+from diffab.utils.misc import load_config  # noqa: E402
+import src.diffab_ft.datasets  # noqa: E402, F401  (registry side effect)
 
 THREE_TO_ONE = {
     'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
@@ -81,11 +86,21 @@ def inspect_pdb(pdb_path: Path, heavy_chain_id: str) -> dict:
 
 def main() -> int:
     pairs_path = PROJECT_ROOT / "data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs.parquet"
-    manifest_path = PROJECT_ROOT / "data/datasets/diffab_manifest.tsv"
     pairs = pd.read_parquet(pairs_path)
-    manifest = pd.read_csv(manifest_path, sep="\t")
-    pdb_to_H = dict(zip(manifest["pdb_id"].astype(str), manifest["H_chain"].astype(str)))
-    print(f"Loaded {len(pairs)} pairs; manifest has {len(manifest)} entries")
+    print(f"Loaded {len(pairs)} pairs")
+
+    # Use the same entry source the PairDataset uses (robust to manifest schema
+    # changes). build the pdbcode → heavy-chain map from sabdab_entries.
+    config_path = PROJECT_ROOT / "configs/dpo/vhh_dpo.yml"
+    config, _ = load_config(str(config_path))
+    print("Building base dataset to get heavy-chain IDs...")
+    base_dataset = get_dataset(config.dataset.train)
+    live_ids = set(base_dataset.db_ids or [])
+    pdb_to_H = {}
+    for entry in base_dataset.sabdab_entries:
+        if entry.get("id") in live_ids:
+            pdb_to_H[entry["pdbcode"]] = str(entry.get("H_chain", "H"))
+    print(f"Entry map covers {len(pdb_to_H)} PDB codes")
 
     random.seed(42)
     sample = pairs.sample(n=min(20, len(pairs)), random_state=42).reset_index(drop=True)
