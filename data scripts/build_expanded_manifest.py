@@ -20,16 +20,22 @@ Transformations:
 
 Filters (Brief 05 §4.5):
   F1. Drop rows with empty antigen_chain.
-  F2. Drop rows with resolution > 3.0 (≤2.5 and 2.5-3.0 buckets reported).
+  F2. Drop rows with resolution > 3.0Å (or missing). EXEMPTION: entries
+      already in --current-manifest-tsv pass F2 unconditionally — the
+      resolution bar is a quality gate for newly added expansion data,
+      not a retroactive purge. Empirical justification: the current
+      manifest contains entries with resolution > 3.0Å (e.g. 7b2m=3.39Å
+      in train, 12/30 of current test PDBs > 3.0Å), so a uniform F2
+      would silently regress the existing pool.
   F3. Drop rows whose antigen_type is not a pipe-separated combination
       of {protein, peptide}. Any other type (DNA / RNA / Hapten / etc.)
-      is excluded.
+      is excluded. Applies uniformly — completeness, not quality.
 
 Test-set preservation audit:
   Reads data/datasets/clustering/cluster_splits.json :: splits.test and
-  reports how many of those PDBs survive the filters. None of the filters
-  may drop a current-test PDB — Brief 05 §7 hard rule. The script raises
-  if any current-test PDB is filtered out.
+  asserts every current-test PDB survives all filters. With the F2
+  exemption above, this passes by construction unless F1/F3 drops a
+  current-test PDB — which would indicate a data corruption upstream.
 """
 
 import argparse
@@ -109,6 +115,10 @@ def main() -> None:
     parser.add_argument("--current-splits-json", required=True, type=Path,
                         help="data/datasets/clustering/cluster_splits.json "
                              "(used for test-set preservation audit).")
+    parser.add_argument("--current-manifest-tsv", required=True, type=Path,
+                        help="Current 465-entry manifest. PDBs already in "
+                             "this manifest are exempt from F2 (resolution "
+                             "cap) — see module docstring.")
     parser.add_argument("--output-tsv", required=True, type=Path,
                         help="Path for the expanded manifest TSV.")
     parser.add_argument("--resolution-cap", type=float, default=3.0,
@@ -123,11 +133,18 @@ def main() -> None:
         sys.exit(f"Input CSV not found: {args.combined_csv}")
     if not args.current_splits_json.exists():
         sys.exit(f"Current splits JSON not found: {args.current_splits_json}")
+    if not args.current_manifest_tsv.exists():
+        sys.exit(f"Current manifest TSV not found: {args.current_manifest_tsv}")
     if args.output_tsv.exists() and not args.overwrite:
         sys.exit(f"Output exists: {args.output_tsv} (use --overwrite)")
 
     df = pd.read_csv(args.combined_csv)
     logger.info("Loaded %d combined-curated rows", len(df))
+
+    # Current manifest PDBs are exempt from F2 (resolution cap).
+    cur_manifest = pd.read_csv(args.current_manifest_tsv, sep="\t")
+    cur_manifest_pdbs = set(cur_manifest["pdb"].astype(str).str.lower())
+    logger.info("Current manifest PDBs (F2-exempt): %d", len(cur_manifest_pdbs))
 
     # Load current test PDB IDs for preservation audit
     with open(args.current_splits_json) as f:
@@ -182,10 +199,19 @@ def main() -> None:
     f1 = out["antigen_chain"].astype(str).str.strip() == ""
     _audit_drop(f1, "F1[empty antigen_chain]")
 
-    # F2: resolution > cap, OR resolution missing
+    # F2: resolution > cap (or missing). Exempt current-manifest PDBs —
+    # the resolution bar gates NEW expansion data quality, not the
+    # already-validated existing pool.
     res_now = pd.to_numeric(out["resolution"], errors="coerce")
-    f2 = (res_now.isna()) | (res_now > args.resolution_cap)
-    _audit_drop(f2, f"F2[resolution > {args.resolution_cap}Å or missing]")
+    is_existing = out["pdb"].isin(cur_manifest_pdbs)
+    f2_quality = (res_now.isna()) | (res_now > args.resolution_cap)
+    f2 = f2_quality & ~is_existing
+    n_f2_exempt = int((f2_quality & is_existing).sum())
+    logger.info("F2 exemption: %d existing-manifest PDBs passed through "
+                "despite resolution > %.1f Å (or missing).",
+                n_f2_exempt, args.resolution_cap)
+    _audit_drop(f2, f"F2[resolution > {args.resolution_cap}Å or missing, "
+                    "new entries only]")
 
     # F3: antigen_type not allowed
     f3 = ~out["antigen_type"].apply(_is_allowed_antigen_type)
