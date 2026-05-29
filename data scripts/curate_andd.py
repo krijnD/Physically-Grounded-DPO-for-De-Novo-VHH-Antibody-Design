@@ -111,6 +111,20 @@ def _list_chain_ids(structure) -> list[str]:
     return [chain.id for chain in structure[0].get_chains()]
 
 
+def _identity(a: str, b: str) -> float:
+    """Length-normalized identity over the min-aligned prefix.
+
+    Lifted verbatim from data scripts/diagnose_rejections.py — used by
+    _pick_vhh's identity-rescue fallback to disambiguate VH candidates
+    that share the same domain modulo unresolved termini.
+    """
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    matches = sum(1 for i in range(n) if a[i] == b[i])
+    return matches / n
+
+
 def _identify_vhh_candidates(pdb_path: str, chain_ids: list[str]) -> list[dict]:
     """Return chains that ANARCI classifies as VH-type within the VHH length band.
 
@@ -164,6 +178,8 @@ def _pick_vhh(
     candidates: list[dict],
     csv_seq: str | None,
     csv_letters: set[str] | None,
+    *,
+    identity_threshold: float = 0.95,
 ) -> tuple[dict, bool]:
     """Pick the best VHH candidate. Returns (chosen, is_ambiguous).
 
@@ -178,6 +194,11 @@ def _pick_vhh(
       one, unambiguous. Rarely fires because CSV sequence is SEQRES-style
       (full biological construct) while candidate sequences are
       ATOM-derived (resolved residues only).
+    - >1 and exactly one candidate matches CSV seq at >= identity_threshold
+      (prefix-aligned identity) → that one, unambiguous. Same VH domain
+      modulo unresolved termini. Brief 03 §4.4 confirmed: rescues 7/32
+      previously-ambiguous entries on the post_diffab subset, zero
+      false-pick risk.
     - >1 and no hint resolves the tie → shortest (heuristic), flagged
       ambiguous. Caller should treat ambiguous picks as rejections, not
       silent overrides of CSV data.
@@ -192,6 +213,12 @@ def _pick_vhh(
         for c in candidates:
             if c["sequence"] == csv_seq:
                 return c, False
+        # Identity-rescue fallback: same VH domain modulo unresolved
+        # termini. Only commit if exactly one candidate clears the bar.
+        scored = [(c, _identity(csv_seq, c["sequence"])) for c in candidates]
+        above = [(c, s) for c, s in scored if s >= identity_threshold]
+        if len(above) == 1:
+            return above[0][0], False
     # Heuristic fallback — caller should reject.
     return min(candidates, key=lambda c: len(c["sequence"])), True
 
