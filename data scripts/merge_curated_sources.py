@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """Merge ANDD-curated and SAbDab-curated CSVs into a unified pool.
 
-PDB-code dedup at the manifest-build boundary (Brief 05 §4.4). For
-overlapping PDBs (a PDB appears in both sources), apply this tiebreak:
+Two-stage pipeline (Brief 05 §4.4):
 
-  1. Better resolution (lower numeric; NaN → +inf, loses)
-  2. More non-null metadata columns (among antigen_type, antigen_name,
-     date, resolution, method)
-  3. Newer deposition date (NaT loses)
-  4. Prefer ANDD (richer original schema)
+  1. PDB-code dedup. For each PDB in the union of the two curated sets,
+     pick one row. Overlap tiebreak (after metadata is unified, see below)
+     collapses to "prefer ANDD" — the original brief's resolution/date
+     comparisons all tie because both sides end up with identical RCSB
+     metadata.
 
-Output columns (the manifest-relevant subset; §4.5 consumes this):
+  2. Metadata layer. ANDD's CSV does not carry RCSB resolution/date/method
+     (only Update_Date and Experimental_Method, neither directly usable
+     in the manifest). To produce a manifest-ready output we attach
+     `antigen_type, antigen_name, date, resolution, method` from a single
+     canonical source PER PDB:
+       (a) SAbDab nano summary if the PDB is listed there (1186 PDBs);
+       (b) PDB-file HEADER/REMARK records as fallback (BioPython).
+
+Output columns:
   PDB_ID, H_Chain Auth Asym ID, Ag_Auth Asym ID, Ab/Nano H_Chain AA,
-  antigen_type, antigen_name, date, resolution, method, source
+  antigen_type, antigen_name, date, resolution, method,
+  source ("ANDD" / "SAbDab" / "ANDD+SAbDab"),
+  metadata_source ("sabdab_summary" / "pdb_header" / "missing")
 
-`source` tags origin and which side won an overlap, so the §4.5 step
-can audit decisions.
-
-CDR-cluster (sequence-identity) dedup is NOT done here — that's §4.6.
-This step only collapses exact PDB-code duplicates.
+CDR-cluster sequence-identity dedup is intentionally deferred to §4.6.
 """
 
 import argparse
@@ -27,6 +32,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from Bio.PDB import PDBParser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,134 +40,132 @@ logging.basicConfig(
 )
 logger = logging.getLogger("merge_curated")
 
-# SAbDab-side column names are fixed (set by sabdab_to_andd_csv.py).
-SAB_COLS = {
-    "resolution":   "resolution",
-    "date":         "date",
-    "antigen_type": "antigen_type",
-    "antigen_name": "antigen_name",
-    "method":       "method",
-}
+
+# ── SAbDab summary metadata lookup ───────────────────────────────────────
+def build_summary_lookup(summary_path: Path) -> dict[str, dict]:
+    """Per-PDB metadata from the SAbDab nano summary.
+
+    Multi-row PDBs are collapsed by picking the row with the longest
+    antigen_chain (matches sabdab_to_andd_csv.py policy).
+    """
+    df = pd.read_csv(summary_path, sep="\t")
+
+    def _n_ag(s) -> int:
+        if pd.isna(s):
+            return 0
+        return len([t for t in str(s).split("|") if t.strip()])
+
+    df["_pdb_lower"] = df["pdb"].astype(str).str.lower()
+    df["_n_ag"] = df["antigen_chain"].apply(_n_ag)
+    df = (
+        df.sort_values(["_pdb_lower", "_n_ag"],
+                        ascending=[True, False], kind="stable")
+          .drop_duplicates(subset="_pdb_lower", keep="first")
+    )
+
+    wanted = ["antigen_type", "antigen_name", "date", "resolution", "method"]
+    have = [c for c in wanted if c in df.columns]
+    missing = set(wanted) - set(have)
+    if missing:
+        logger.warning("SAbDab summary missing columns: %s", sorted(missing))
+
+    lookup = df.set_index("_pdb_lower")[have].to_dict("index")
+    logger.info("SAbDab summary lookup built: %d PDB codes (cols: %s)",
+                len(lookup), have)
+    return lookup
 
 
-def find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    """Return the first column matching any candidate (case-insensitive)."""
-    cols_lower = {c.lower(): c for c in df.columns}
-    for cand in candidates:
-        if cand.lower() in cols_lower:
-            return cols_lower[cand.lower()]
+# ── PDB-header fallback ──────────────────────────────────────────────────
+_PARSER = PDBParser(QUIET=True)
+
+
+def parse_pdb_header(pdb_path: Path) -> dict:
+    """Pull RCSB-equivalent metadata from a PDB file's HEADER/REMARK
+    records. Returns the same five-key dict shape as the summary lookup;
+    antigen_type cannot be derived and is left None (defaulted later)."""
+    try:
+        struct = _PARSER.get_structure("x", str(pdb_path))
+        h = struct.header
+        return {
+            "antigen_type": None,
+            "antigen_name": None,
+            "date":         h.get("deposition_date"),
+            "resolution":   h.get("resolution"),
+            "method":       (h.get("structure_method") or "").upper() or None,
+        }
+    except Exception as e:
+        logger.debug("PDB header parse failed for %s: %s", pdb_path, e)
+        return {k: None for k in ("antigen_type", "antigen_name",
+                                   "date", "resolution", "method")}
+
+
+def find_pdb(pdb_id_lower: str, pdb_dirs: list[Path]) -> Path | None:
+    """Locate a PDB file by id (case-insensitive) across multiple dirs."""
+    candidates = [f"{pdb_id_lower}.pdb", f"{pdb_id_lower.upper()}.pdb"]
+    for d in pdb_dirs:
+        for name in candidates:
+            p = d / name
+            if p.exists():
+                return p
     return None
 
 
-def detect_andd_cols(df: pd.DataFrame) -> dict[str, str | None]:
-    """Heuristically find ANDD's metadata columns. Logs detections."""
-    detected = {
-        "resolution":   find_col(df, ["Resolution", "resolution", "Resol"]),
-        "date":         find_col(df, ["Date", "date", "Deposition Date",
-                                       "Deposit Date", "Release Date"]),
-        "antigen_type": find_col(df, ["antigen_type", "Antigen_Type",
-                                       "Ag_Type", "Ag Type"]),
-        "antigen_name": find_col(df, ["antigen_name", "Antigen_Name",
-                                       "Ag_Name", "Ag Name", "Antigen"]),
-        "method":       find_col(df, ["method", "Method", "Exptl_Method",
-                                       "Experimental Method"]),
-    }
-    logger.info("ANDD column detection:")
-    for k, v in detected.items():
-        logger.info("  %-13s -> %s", k, v if v else "(none)")
-    return detected
+def get_metadata(pdb_lower: str,
+                 summary_lookup: dict[str, dict],
+                 pdb_dirs: list[Path]) -> tuple[dict, str]:
+    """Return (metadata_dict, source_tag)."""
+    if pdb_lower in summary_lookup:
+        return dict(summary_lookup[pdb_lower]), "sabdab_summary"
+    p = find_pdb(pdb_lower, pdb_dirs)
+    if p is None:
+        return ({k: None for k in ("antigen_type", "antigen_name",
+                                    "date", "resolution", "method")},
+                "missing")
+    return parse_pdb_header(p), "pdb_header"
 
 
-def _safe_float(v) -> float:
-    try:
-        f = float(v)
-        # Guard NaN: NaN comparisons all return False; force to +inf so the
-        # NaN-resolution row LOSES the resolution tiebreak instead of
-        # tying with a real number.
-        return f if f == f else float("inf")
-    except (TypeError, ValueError):
-        return float("inf")
-
-
-def _safe_date(v) -> pd.Timestamp:
-    ts = pd.to_datetime(v, errors="coerce")
-    return ts if pd.notna(ts) else pd.Timestamp("1900-01-01")
-
-
-def _nn_count(row, cols: list[str | None]) -> int:
-    return sum(1 for c in cols if c and pd.notna(row.get(c)))
-
-
-def pick_winner(
-    andd_row: pd.Series,
-    sab_row: pd.Series,
-    andd_cols: dict[str, str | None],
-) -> str:
-    """Apply the §4.4 tiebreak. Returns 'ANDD' or 'SAbDab'."""
-    # 1) Resolution: lower wins
-    ra = _safe_float(andd_row.get(andd_cols["resolution"]) if andd_cols["resolution"] else None)
-    rs = _safe_float(sab_row.get(SAB_COLS["resolution"]))
-    if ra < rs:
-        return "ANDD"
-    if rs < ra:
-        return "SAbDab"
-
-    # 2) More non-null metadata (over the 5-column metadata set)
-    na = _nn_count(andd_row, list(andd_cols.values()))
-    ns = _nn_count(sab_row, list(SAB_COLS.values()))
-    if na > ns:
-        return "ANDD"
-    if ns > na:
-        return "SAbDab"
-
-    # 3) Newer date wins
-    da = _safe_date(andd_row.get(andd_cols["date"]) if andd_cols["date"] else None)
-    ds = _safe_date(sab_row.get(SAB_COLS["date"]))
-    if da > ds:
-        return "ANDD"
-    if ds > da:
-        return "SAbDab"
-
-    # 4) Final tiebreak
-    return "ANDD"
-
-
-def project_row(
-    row: pd.Series,
-    source_label: str,
-    cols: dict[str, str | None],
-) -> dict:
-    """Map a source-specific row to the unified output schema."""
-    def g(key: str):
-        c = cols.get(key)
-        return row.get(c) if c else None
-
+# ── Per-row projection ───────────────────────────────────────────────────
+def project_row(src_row: pd.Series,
+                source_label: str,
+                metadata: dict,
+                metadata_source: str) -> dict:
     return {
-        "PDB_ID":               row.get("PDB_ID"),
-        "H_Chain Auth Asym ID": row.get("H_Chain Auth Asym ID"),
-        "Ag_Auth Asym ID":      row.get("Ag_Auth Asym ID"),
-        "Ab/Nano H_Chain AA":   row.get("Ab/Nano H_Chain AA"),
-        "antigen_type":         g("antigen_type"),
-        "antigen_name":         g("antigen_name"),
-        "date":                 g("date"),
-        "resolution":           g("resolution"),
-        "method":               g("method"),
+        "PDB_ID":               src_row.get("PDB_ID"),
+        "H_Chain Auth Asym ID": src_row.get("H_Chain Auth Asym ID"),
+        "Ag_Auth Asym ID":      src_row.get("Ag_Auth Asym ID"),
+        "Ab/Nano H_Chain AA":   src_row.get("Ab/Nano H_Chain AA"),
+        "antigen_type":         metadata.get("antigen_type"),
+        "antigen_name":         metadata.get("antigen_name"),
+        "date":                 metadata.get("date"),
+        "resolution":           metadata.get("resolution"),
+        "method":               metadata.get("method"),
         "source":               source_label,
+        "metadata_source":      metadata_source,
     }
 
 
+# ── Main ─────────────────────────────────────────────────────────────────
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--andd-csv", required=True, type=Path)
     parser.add_argument("--sabdab-csv", required=True, type=Path)
+    parser.add_argument("--sabdab-summary-tsv", required=True, type=Path,
+                        help="SAbDab nano summary TSV (canonical metadata source).")
+    parser.add_argument("--pdb-dirs", required=True, type=Path, nargs="+",
+                        help="One or more PDB directories to search for the "
+                             "header-fallback path (typically the ANDD and "
+                             "SAbDab download dirs).")
     parser.add_argument("--output-csv", required=True, type=Path)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    for p in (args.andd_csv, args.sabdab_csv):
+    for p in (args.andd_csv, args.sabdab_csv, args.sabdab_summary_tsv):
         if not p.exists():
             sys.exit(f"Input not found: {p}")
+    for d in args.pdb_dirs:
+        if not d.exists() or not d.is_dir():
+            sys.exit(f"PDB dir not found: {d}")
     if args.output_csv.exists() and not args.overwrite:
         sys.exit(f"Output exists: {args.output_csv} (use --overwrite)")
 
@@ -170,14 +174,10 @@ def main() -> None:
     logger.info("ANDD:   %d rows x %d cols", len(andd), len(andd.columns))
     logger.info("SAbDab: %d rows x %d cols", len(sab), len(sab.columns))
 
-    andd_cols = detect_andd_cols(andd)
+    summary_lookup = build_summary_lookup(args.sabdab_summary_tsv)
 
-    # Lowercase the join key
     andd["_pdb_lower"] = andd["PDB_ID"].astype(str).str.lower()
     sab["_pdb_lower"]  = sab["PDB_ID"].astype(str).str.lower()
-
-    # Each curate output is already PDB-deduped (curate dedupes its input
-    # before the per-row loop), but be paranoid: drop any residual dups.
     andd = andd.drop_duplicates(subset="_pdb_lower", keep="first")
     sab  = sab.drop_duplicates(subset="_pdb_lower", keep="first")
 
@@ -186,7 +186,6 @@ def main() -> None:
     overlap   = andd_set & sab_set
     andd_only = andd_set - sab_set
     sab_only  = sab_set - andd_set
-
     logger.info("ANDD-only:   %d", len(andd_only))
     logger.info("SAbDab-only: %d", len(sab_only))
     logger.info("Overlap:     %d", len(overlap))
@@ -196,25 +195,32 @@ def main() -> None:
     sab_idx  = sab.set_index("_pdb_lower")
 
     rows: list[dict] = []
-    for p in sorted(andd_only):
-        rows.append(project_row(andd_idx.loc[p], "ANDD", andd_cols))
-    for p in sorted(sab_only):
-        rows.append(project_row(sab_idx.loc[p], "SAbDab", SAB_COLS))
+    meta_source_counts: dict[str, int] = {"sabdab_summary": 0,
+                                          "pdb_header": 0,
+                                          "missing": 0}
 
-    n_andd_wins = n_sab_wins = 0
-    for p in sorted(overlap):
-        winner = pick_winner(andd_idx.loc[p], sab_idx.loc[p], andd_cols)
-        if winner == "ANDD":
-            n_andd_wins += 1
-            rows.append(project_row(andd_idx.loc[p], "ANDD+SAbDab[A-won]",
-                                     andd_cols))
-        else:
-            n_sab_wins += 1
-            rows.append(project_row(sab_idx.loc[p], "ANDD+SAbDab[S-won]",
-                                     SAB_COLS))
+    n = 0
+    total = len(andd_set | sab_set)
 
-    logger.info("Overlap tiebreaks: ANDD-won=%d  SAbDab-won=%d",
-                n_andd_wins, n_sab_wins)
+    def _emit(pdb: str, src_row: pd.Series, source_label: str):
+        nonlocal n
+        n += 1
+        meta, msrc = get_metadata(pdb, summary_lookup, args.pdb_dirs)
+        meta_source_counts[msrc] += 1
+        rows.append(project_row(src_row, source_label, meta, msrc))
+        if n % 200 == 0:
+            logger.info("  ...metadata attached for %d/%d", n, total)
+
+    for pdb in sorted(andd_only):
+        _emit(pdb, andd_idx.loc[pdb], "ANDD")
+    for pdb in sorted(sab_only):
+        _emit(pdb, sab_idx.loc[pdb], "SAbDab")
+    for pdb in sorted(overlap):
+        # Both rows end up with identical metadata via summary_lookup,
+        # so the brief's tiebreak (resolution / nn-metadata / date) all
+        # tie and we fall through to "prefer ANDD" (§4.4 final rule).
+        # We still tag source as "ANDD+SAbDab" so the audit is honest.
+        _emit(pdb, andd_idx.loc[pdb], "ANDD+SAbDab")
 
     out = pd.DataFrame(rows)
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +230,16 @@ def main() -> None:
     logger.info("Wrote %d combined rows to %s", len(out), args.output_csv)
     logger.info("Source breakdown:")
     logger.info("%s", out["source"].value_counts().to_string())
+    logger.info("Metadata-source breakdown:")
+    for k, v in meta_source_counts.items():
+        logger.info("  %-15s %d", k, v)
+    # Quick sanity numbers
+    res = pd.to_numeric(out["resolution"], errors="coerce")
+    logger.info("Resolution non-null: %d / %d", res.notna().sum(), len(out))
+    logger.info("Date non-null:       %d / %d",
+                out["date"].notna().sum(), len(out))
+    logger.info("antigen_type non-null: %d / %d",
+                out["antigen_type"].notna().sum(), len(out))
     logger.info("=" * 60)
 
 
