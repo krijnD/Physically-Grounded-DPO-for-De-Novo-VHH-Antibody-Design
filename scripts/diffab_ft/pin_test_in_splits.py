@@ -135,13 +135,20 @@ def main() -> None:
     logger.info("Pinned clusters: %d (containing %d entries)",
                 len(pinned_reps), pinned_member_count)
 
-    # Verify every old-test PDB is reachable via clustering
-    clustered_pdbs = {_entry_pdb(e) for e in cluster_assignments}
-    missing_from_clustering = old_test_pdbs - clustered_pdbs
+    # Verify every old-test PDB is reachable via clustering. "Reachable"
+    # means either: (a) in cluster_assignments directly (i.e. its entry
+    # survived dedup and went to MMseqs); or (b) in some dedup_group's
+    # member list (deduped-out — its dedup-rep IS in cluster_assignments).
+    reachable_entries: set[str] = set(cluster_assignments.keys())
+    for members in dedup_groups.values():
+        reachable_entries.update(members)
+    reachable_pdbs = {_entry_pdb(e) for e in reachable_entries}
+    missing_from_clustering = old_test_pdbs - reachable_pdbs
     if missing_from_clustering:
         logger.error(
-            "Current-test PDBs NOT FOUND in cluster_assignments: %s "
-            "(probably failed CDR extraction in cluster_split.py)",
+            "Current-test PDBs NOT FOUND in cluster_assignments OR "
+            "dedup_groups: %s (probably failed CDR extraction in "
+            "cluster_split.py, or missing from the expanded manifest)",
             sorted(missing_from_clustering),
         )
         sys.exit(2)
