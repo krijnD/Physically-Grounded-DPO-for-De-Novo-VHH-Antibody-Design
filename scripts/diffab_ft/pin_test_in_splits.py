@@ -67,11 +67,29 @@ def main() -> None:
     # Load raw cluster assignments
     raw = json.loads(args.raw_splits_json.read_text())
     cluster_assignments: dict[str, str] = raw["cluster_assignments"]
+    # dedup_groups maps {rep_entry_id: [all members that share its dedup
+    # key]}. Critical for pinning: a deduped-out entry (e.g. 7ph3_C) does
+    # NOT appear in cluster_assignments — only the dedup rep does. We
+    # need this mapping to recover which cluster the deduped-out entry
+    # collapsed into.
+    dedup_groups: dict[str, list[str]] = raw.get("dedup_groups", {})
+    if not dedup_groups:
+        logger.warning("Raw splits JSON has no `dedup_groups` field — "
+                       "deduped-out test entries will be invisible. "
+                       "Re-run cluster_split.py with the updated script.")
     logger.info("Raw cluster assignments: %d entries across %d clusters",
                 len(cluster_assignments),
                 len(set(cluster_assignments.values())))
+    logger.info("Dedup groups: %d (rep → members)", len(dedup_groups))
 
-    # Load current test PDB IDs
+    # Build entry → dedup_rep (inverse of dedup_groups). Used to find the
+    # rep for old-test entries that were deduped out.
+    entry_to_dedup_rep: dict[str, str] = {}
+    for rep, members in dedup_groups.items():
+        for m in members:
+            entry_to_dedup_rep[m] = rep
+
+    # Load current test PDB IDs and full entry list
     cur = json.loads(args.current_splits_json.read_text())
     old_test_entries: list[str] = cur["splits"]["test"]
     old_test_pdbs = {_entry_pdb(e) for e in old_test_entries}
@@ -86,11 +104,32 @@ def main() -> None:
         rep_to_members[k].sort()
     all_reps = sorted(rep_to_members.keys())
 
-    # Identify pinned clusters (those touching any current-test PDB)
+    # Identify pinned clusters via TWO matching paths:
+    # (1) PDB-level match: a cluster member's PDB matches an old-test PDB.
+    #     Catches the common case (current-test entry survived dedup).
+    # (2) Dedup-rep lookup: for any old-test entry that was deduped out,
+    #     find its dedup_rep, then the cluster that rep belongs to. This
+    #     handles 7ph3_C / 8r61_C in the expanded run.
     pinned_reps: set[str] = set()
+    # Path 1: PDB-level
     for rep, members in rep_to_members.items():
         if any(_entry_pdb(m) in old_test_pdbs for m in members):
             pinned_reps.add(rep)
+    # Path 2: dedup-rep
+    test_via_dedup: list[tuple[str, str]] = []  # (old_entry, dedup_rep)
+    for entry in old_test_entries:
+        if entry in entry_to_dedup_rep:
+            dedup_rep = entry_to_dedup_rep[entry]
+            cluster_rep = cluster_assignments.get(dedup_rep)
+            if cluster_rep is not None:
+                if cluster_rep not in pinned_reps:
+                    test_via_dedup.append((entry, dedup_rep))
+                pinned_reps.add(cluster_rep)
+    if test_via_dedup:
+        logger.info("Rescued %d deduped-out old-test entries via "
+                    "dedup_rep lookup:", len(test_via_dedup))
+        for old, rep in test_via_dedup[:20]:
+            logger.info("  %s -> dedup rep %s", old, rep)
 
     pinned_member_count = sum(len(rep_to_members[r]) for r in pinned_reps)
     logger.info("Pinned clusters: %d (containing %d entries)",
@@ -134,6 +173,30 @@ def main() -> None:
         if bucket is None:
             sys.exit(f"Bug: cluster {rep!r} not assigned to any split.")
         splits[bucket].extend(rep_to_members[rep])
+
+    # Add deduped-out old-test entries back to splits.test (and patch
+    # cluster_assignments accordingly). Brief 05 §7 is entry-level
+    # (old splits.test ⊆ new splits.test), not biology-level — we must
+    # carry the literal entry_id forward. The deduped-out entry's
+    # ATOM sequence matches its dedup-rep so the LMDB has a perfectly
+    # valid sample for it; this just makes it visible in the splits.
+    n_restored = 0
+    for entry in old_test_entries:
+        if entry in splits["test"]:
+            continue
+        dedup_rep = entry_to_dedup_rep.get(entry)
+        if dedup_rep is None:
+            continue
+        cluster_rep = cluster_assignments.get(dedup_rep)
+        if cluster_rep is None or cluster_rep not in pinned_reps:
+            continue
+        splits["test"].append(entry)
+        cluster_assignments[entry] = cluster_rep
+        n_restored += 1
+    if n_restored:
+        logger.info("Restored %d deduped-out old-test entries to "
+                    "splits.test (and to cluster_assignments).", n_restored)
+
     for k in splits:
         splits[k].sort()
 
@@ -155,14 +218,24 @@ def main() -> None:
     logger.info("Test preservation OK: all %d old-test PDBs present in "
                 "new test split (PDB-level).", len(old_test_pdbs))
 
-    # Audit: how many current-test entries (PDB+Hchain) match exactly?
+    # Entry-level preservation (Brief 05 §7 invariant): every old test
+    # entry_id must appear in the new splits.test. After the dedup
+    # restore step above this should pass unconditionally; if not, an
+    # entry is missing from cluster_assignments + dedup_groups, which
+    # would point at a manifest/curated-CSV inconsistency.
     old_test_entry_set = set(old_test_entries)
     new_test_entry_set = set(splits["test"])
-    exact_match = len(old_test_entry_set & new_test_entry_set)
-    logger.info("Test preservation entry-level (PDB+Hchain exact match): "
-                "%d / %d old-test entries (%d PDBs had chain renames).",
-                exact_match, len(old_test_entries),
-                len(old_test_pdbs) - exact_match)
+    missing_entries = old_test_entry_set - new_test_entry_set
+    if missing_entries:
+        logger.error(
+            "ENTRY-LEVEL PRESERVATION FAILED — %d old-test entries missing "
+            "from new test: %s",
+            len(missing_entries), sorted(missing_entries),
+        )
+        sys.exit(2)
+    logger.info("Test preservation entry-level: all %d old-test entries "
+                "present in new test split (incl. dedup restores).",
+                len(old_test_entries))
 
     # Write
     output = {

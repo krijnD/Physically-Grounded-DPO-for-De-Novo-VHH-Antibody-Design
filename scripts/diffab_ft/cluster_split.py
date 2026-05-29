@@ -526,8 +526,12 @@ def main() -> None:
 
     # ── Dedup pass: pick one representative per unique key ──────────
     n_before_dedup = n_extracted
+    # Always populated below (identity mapping when dedup disabled), so
+    # the splits JSON has a uniform schema.
+    rep_to_dedup_members: dict[str, list[str]] = {}
     if args.dedupe_by == "none":
         kept_entry_ids = set(entry_to_cdr.keys())
+        rep_to_dedup_members = {eid: [eid] for eid in kept_entry_ids}
         logger.info("Dedup disabled (--dedupe-by none): keeping all %d entries.",
                     n_before_dedup)
     else:
@@ -570,10 +574,17 @@ def main() -> None:
         for eid in entry_to_cdr:
             groups[key_fn(eid)].append(eid)
 
-        kept_entry_ids = {
-            select_representative(eids, manifest_index)
-            for eids in groups.values()
-        }
+        # Build {rep_entry_id: [all members of dedup group incl. rep]} so
+        # downstream consumers (e.g. pin_test_in_splits.py) can recover which
+        # rep a deduped-out entry collapsed into. Without this the
+        # cluster_assignments output is keyed only on reps, and the
+        # deduped-out entries become invisible to splits post-processing.
+        kept_entry_ids = set()
+        for eids in groups.values():
+            rep = select_representative(eids, manifest_index)
+            kept_entry_ids.add(rep)
+            rep_to_dedup_members[rep] = sorted(eids)
+
         logger.info(
             "Dedup by %s: %d entries → %d unique (kept reps; "
             "largest group had %d members).",
@@ -640,6 +651,10 @@ def main() -> None:
     output = {
         "splits": splits,
         "cluster_assignments": member_to_rep,
+        # Preserves the dedup group structure: rep_entry_id → [all members
+        # that share its dedup key, incl. rep itself]. Lets downstream code
+        # find which cluster a deduped-out entry collapsed into.
+        "dedup_groups": rep_to_dedup_members,
         "params": {
             "identity": args.identity,
             "coverage": args.coverage,
