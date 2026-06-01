@@ -30,28 +30,26 @@
 #SBATCH --job-name=diffab_ft_expanded
 #SBATCH --output=logs/slurm/%x_%j.out
 
-set -euo pipefail
+# Defer `set -e` until after env setup — module/venv ops can produce
+# benign non-zero exits, and we want the slurm log to show what's
+# happening before strict-mode tripwires fire.
+set -uo pipefail
 
-# ── Env setup ──────────────────────────────────────────────────────
-# Brief 06 mandates `start_project` (Python 3.13 + abnumber 0.4.4 +
-# HMMER 3.4 — the env that produced the expanded LMDB in Brief 05).
-# It's defined in Krijn's interactive shell config; source bashrc so
-# the alias/function is available in this non-interactive shell.
-shopt -s expand_aliases 2>/dev/null || true
-set +u
-[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
-set -u
+echo "=== sbatch boot: $(hostname) $(date -Iseconds) JobID=${SLURM_JOB_ID:-n/a} ==="
 
-if type start_project >/dev/null 2>&1; then
-    start_project
-else
-    echo "WARN: start_project not found after sourcing bashrc — falling back to handoff §8 env." >&2
-    module load 2024
-    module load Python/3.12.3-GCCcore-13.3.0
-    source /projects/0/hpmlprjs/interns/krijn/venvs/DPO/bin/activate
-fi
+# ── Env setup (inlined from `start_project` alias) ─────────────────
+# Aliases don't expand in non-interactive shells, so we replicate the
+# alias body verbatim. Source: ~/.bashrc on Snellius login node
+# (DPO venv = Python 3.13.5; modules unchanged from Brief 05's build).
+source /projects/0/hpmlprjs/interns/krijn/venvs/DPO/bin/activate
+module purge
+module load 2025 2024 gompi/2024a HMMER/3.4-gompi-2024a
+export PATH="/projects/0/hpmlprjs/interns/krijn/tools/mmseqs/bin:$PATH"
 
 mkdir -p logs/slurm runs/vhh_ft/seed42_jfix_expanded
+
+# Strict mode for the rest of the script.
+set -e
 
 # ── Provenance ─────────────────────────────────────────────────────
 echo "JobID:    ${SLURM_JOB_ID:-n/a}"
