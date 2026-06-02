@@ -273,28 +273,51 @@ def figure_dpocurve() -> None:
     """
     print("=== Figure 4: DPO training curves ===")
 
-    used_wandb = False
-    try:
-        import wandb  # type: ignore
-        api = wandb.Api(timeout=15)
-        # Floor run: floor's W&B URL not recorded in progress.md; fallback to
-        # local W&B csv export if a parquet/csv exists at runs/dpo/...
-        # Skip if not present. Best to populate manually post-hoc.
-        floor_hist = None
-        new_run = api.run("krijnd/vhh-dpo/432gc6a2")    # Brief 07b W&B URL
-        new_hist = new_run.history(samples=2000, keys=["val/loss", "_step"])
-        used_wandb = new_hist is not None and not new_hist.empty
-    except Exception as exc:  # noqa: BLE001
-        print(f"  W&B unavailable ({exc!s}); falling back to key-points plot.")
-        new_hist = floor_hist = None
+    # Offline-first: prefer local W&B CSV exports if present.
+    floor_csv = PROJECT_ROOT / "data/wandb_exports/dpo_floor_history.csv"
+    new_csv   = PROJECT_ROOT / "data/wandb_exports/dpo_new_history.csv"
+
+    floor_hist = pd.read_csv(floor_csv) if floor_csv.exists() else None
+    new_hist   = pd.read_csv(new_csv)   if new_csv.exists()   else None
+
+    if floor_hist is None or new_hist is None:
+        try:
+            import wandb  # type: ignore
+            api = wandb.Api(timeout=15)
+            if new_hist is None:
+                r = api.run("krijnd/vhh-dpo/432gc6a2")    # Brief 07b W&B URL
+                new_hist = r.history(samples=2000, keys=["val/loss", "_step"])
+        except Exception as exc:  # noqa: BLE001
+            print(f"  W&B unavailable ({exc!s}); CSVs are the only source.")
+
+    used_data = (floor_hist is not None and not floor_hist.empty) or \
+                (new_hist   is not None and not new_hist.empty)
 
     fig, ax = plt.subplots(figsize=(7.5, 4.4))
 
-    if used_wandb and new_hist is not None:
-        ax.plot(new_hist["_step"], new_hist["val/loss"],
-                color=COLOR_NEW, alpha=0.85, linewidth=1.4,
-                label="new pipeline (DPO on expanded π_ref, val DPO loss)")
-        # Floor curve would go here too if recoverable; placeholder.
+    def _pick_col(df: pd.DataFrame, *candidates: str) -> Optional[str]:
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    if used_data:
+        if new_hist is not None and not new_hist.empty:
+            step_col = _pick_col(new_hist, "_step", "iter", "iteration")
+            val_col  = _pick_col(new_hist, "val/loss", "val_loss")
+            if step_col and val_col:
+                df = new_hist.dropna(subset=[step_col, val_col]).sort_values(step_col)
+                ax.plot(df[step_col], df[val_col],
+                        color=COLOR_NEW, alpha=0.85, linewidth=1.4,
+                        label="new pipeline (DPO on expanded π_ref)")
+        if floor_hist is not None and not floor_hist.empty:
+            step_col = _pick_col(floor_hist, "_step", "iter", "iteration")
+            val_col  = _pick_col(floor_hist, "val/loss", "val_loss")
+            if step_col and val_col:
+                df = floor_hist.dropna(subset=[step_col, val_col]).sort_values(step_col)
+                ax.plot(df[step_col], df[val_col],
+                        color=COLOR_OLD, alpha=0.85, linewidth=1.4,
+                        label="floor (DPO on seed42_jfix)")
     else:
         # Key-points fallback. Numbers from progress.md / handoff §10.
         iters_floor = [1, 100, 200, 300, 400, 500, 600, 800, 1100, 1500, 2000, 3100]
