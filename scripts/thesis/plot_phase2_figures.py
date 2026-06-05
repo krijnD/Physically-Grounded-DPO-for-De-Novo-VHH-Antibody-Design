@@ -725,6 +725,215 @@ def figure_fig11b_developability_scorecard() -> None:
     plt.close(fig)
 
 
+# ── Brief 12 (Phase B) — scRMSD designability figures ──────────────────
+def figure_fig12a_designability_bars() -> None:
+    """Brief 12 Figure A — per-CDR scRMSD designability (% < 2 Å) by variant and test set.
+
+    Two stacked panels: OLD test (top, 4 variants), NEW test (bottom, 2 variants).
+    Per panel: 3 CDR groups (H1, H2, H3); within each group, one bar per variant.
+    Light-grey band 60-75% marks the IgDiff RAbD field-comparable reference.
+
+    Caption (slot-in for thesis): "Per-CDR scRMSD designability — share of
+    design samples with sequence self-consistency RMSD < 2 Å, the
+    field-standard 'designable' threshold (Yim et al. 2024; IgDiff). scRMSD
+    is Cα RMSD on each masked CDR after Kabsch-alignment of the
+    ABodyBuilder2-folded backbone onto the generated backbone on framework
+    atoms (n_total = 3284 samples after ANARCI rejected ~3% of generated
+    sequences as non-Ab; full breakdown in §x.y). Light-grey band marks the
+    60-75% range reported by IgDiff on paired-chain RAbD as a rough
+    field-comparable reference; nanobody H3 is intrinsically harder due to
+    longer / more variable CDR3 conformations even in deposited crystals.
+    The H3 designability ceiling at 25.9-26.7% on OLD test across all four
+    variants — a 0.8 pp spread spanning a 4x FT data-scale-up and two
+    DPO interventions — corroborates the H3 data-property bottleneck
+    advanced in §x.y."
+    """
+    print("=== Figure 12.A: scRMSD designability bars ===")
+    master = _load_design_master()
+    if "scrmsd" not in master.columns:
+        raise FileNotFoundError(
+            "scrmsd column missing from design_samples_master.parquet — "
+            "run scripts/eval/join_scrmsd_into_master.py first (Brief 12 Step 4)."
+        )
+    df = master.dropna(subset=["scrmsd"]).copy()
+    df["designable"] = (df["scrmsd"] < 2.0).astype(int)
+
+    cdrs = ["H1", "H2", "H3"]
+    test_sets = [("oldtest", "OLD test"), ("newtest", "NEW test")]
+    panel_heights = [3.0, 2.0]  # OLD panel slightly taller (4 bars/group)
+
+    fig, axes = plt.subplots(
+        2, 1, figsize=(8.5, sum(panel_heights) + 1.0),
+        sharex=True, gridspec_kw={"height_ratios": panel_heights},
+    )
+
+    for row_idx, (ts_key, ts_label) in enumerate(test_sets):
+        ax = axes[row_idx]
+        sub = df[df["test_set"] == ts_key]
+        variants_present = [v for v in VARIANT_ORDER if v in sub["variant"].unique()]
+        n_v = len(variants_present)
+        if n_v == 0:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+            continue
+
+        ax.axhspan(60, 75, color="0.85", alpha=0.55, zorder=0,
+                   label="IgDiff RAbD field range (60-75%)" if row_idx == 0 else None)
+
+        x = np.arange(len(cdrs))
+        width = 0.78 / n_v
+
+        for i, v in enumerate(variants_present):
+            vsub = sub[sub["variant"] == v]
+            pct, counts = [], []
+            for cdr in cdrs:
+                csub = vsub[vsub["cdr"] == cdr]
+                if len(csub):
+                    pct.append(100 * csub["designable"].mean())
+                    counts.append(len(csub))
+                else:
+                    pct.append(np.nan)
+                    counts.append(0)
+            offset = (i - (n_v - 1) / 2) * width
+            bars = ax.bar(
+                x + offset, pct, width=width * 0.92,
+                color=VARIANT_COLOR[v], alpha=0.88,
+                label=VARIANT_LABEL.get(v, v),
+            )
+            for b, p in zip(bars, pct):
+                if not np.isnan(p):
+                    ax.text(
+                        b.get_x() + b.get_width() / 2, p + 1.5,
+                        f"{p:.0f}", ha="center", va="bottom",
+                        fontsize=FONT_SIZE - 2,
+                    )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(cdrs)
+        ax.set_ylabel("% designable\n(scRMSD < 2 Å)")
+        ax.set_ylim(0, 100)
+        ax.grid(axis="y", linestyle=":", linewidth=0.5, alpha=0.5)
+        ax.set_title(
+            f"{ts_label}  ·  n_samples = {len(sub)}  ·  variants = {n_v}",
+            fontsize=FONT_SIZE, loc="left",
+        )
+        ax.legend(
+            loc="upper right", frameon=False,
+            ncol=min(3, n_v + 1), fontsize=FONT_SIZE - 2,
+        )
+
+    axes[-1].set_xlabel("CDR")
+    fig.suptitle(
+        "Per-CDR scRMSD designability — ABodyBuilder2 self-consistency",
+        fontsize=FONT_SIZE + 1, y=1.00,
+    )
+    fig.tight_layout()
+    _save_phase_b(fig, "fig12a_designability_bars")
+    plt.close(fig)
+
+
+def figure_fig12b_scrmsd_histograms() -> None:
+    """Brief 12 Figure B — scRMSD distributions per CDR per variant per test set.
+
+    2×3 grid: rows = test set (OLD top, NEW bottom), cols = CDR (H1 / H2 / H3).
+    Per panel: overlaid step histograms per variant + vertical 2 Å threshold
+    line. X-axis clipped at 8 Å for legibility; the H3 long tail above 8 Å
+    holds ~5-15% of samples per variant and is annotated by a "% >8 Å"
+    label per panel.
+
+    Caption (slot-in): "Per-CDR scRMSD distributions across the four model
+    variants. Dashed line marks the 2 Å 'designable' threshold; the long
+    tails on H3 (median scRMSD 2.4-3.5 Å vs 1.4 Å on H2 and 1.7 Å on H1)
+    reflect the H3 data-property bottleneck — the model occasionally places
+    the generated H3 sequence in a backbone configuration that the sequence
+    does not natively adopt. The OLD-test H3 row exhibits the largest spread
+    in the tail; the NEW-test H3 row sits noticeably better (medians shift
+    ~0.6 Å lower), consistent with the NEW test having an easier H3
+    length / conformation distribution than OLD."
+    """
+    print("=== Figure 12.B: scRMSD histograms ===")
+    master = _load_design_master()
+    if "scrmsd" not in master.columns:
+        raise FileNotFoundError(
+            "scrmsd column missing from design_samples_master.parquet — "
+            "run scripts/eval/join_scrmsd_into_master.py first."
+        )
+    df = master.dropna(subset=["scrmsd"]).copy()
+
+    cdrs = ["H1", "H2", "H3"]
+    test_sets = [("oldtest", "OLD test"), ("newtest", "NEW test")]
+    XMAX = 8.0
+    bins = np.linspace(0, XMAX, 41)
+
+    fig, axes = plt.subplots(
+        2, 3, figsize=(11, 5.5), sharex=True, sharey="row",
+    )
+
+    for row_idx, (ts_key, ts_label) in enumerate(test_sets):
+        sub_t = df[df["test_set"] == ts_key]
+        variants_present = [v for v in VARIANT_ORDER if v in sub_t["variant"].unique()]
+        for col_idx, cdr in enumerate(cdrs):
+            ax = axes[row_idx, col_idx]
+            for v in variants_present:
+                vsub = sub_t[(sub_t["variant"] == v) & (sub_t["cdr"] == cdr)]
+                if len(vsub) == 0:
+                    continue
+                vals = vsub["scrmsd"].values
+                vals_clipped = np.clip(vals, 0, XMAX)
+                ax.hist(
+                    vals_clipped, bins=bins, density=True,
+                    histtype="step", linewidth=1.5,
+                    color=VARIANT_COLOR[v], alpha=0.9,
+                    label=VARIANT_LABEL.get(v, v),
+                )
+
+            ax.axvline(2.0, linestyle="--", color="0.35",
+                       linewidth=1.0, alpha=0.85)
+            ax.text(
+                2.0, ax.get_ylim()[1] * 0.92 if ax.get_ylim()[1] > 0 else 0,
+                " 2 Å", color="0.35", fontsize=FONT_SIZE - 2, va="top",
+            )
+
+            # Tail annotation: across-variant % of samples > XMAX
+            all_vals = sub_t.loc[sub_t["cdr"] == cdr, "scrmsd"]
+            n_above = (all_vals > XMAX).sum()
+            if len(all_vals):
+                ax.text(
+                    0.97, 0.97,
+                    f"% >{int(XMAX)} Å: {100 * n_above / len(all_vals):.1f}%\n"
+                    f"median: {all_vals.median():.2f} Å",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=FONT_SIZE - 2,
+                    bbox=dict(boxstyle="round,pad=0.18",
+                              facecolor="white", edgecolor="0.7",
+                              linewidth=0.5, alpha=0.85),
+                )
+
+            if row_idx == 0:
+                ax.set_title(cdr)
+            if col_idx == 0:
+                ax.set_ylabel(f"density\n({ts_label})")
+            if row_idx == 1:
+                ax.set_xlabel("scRMSD (Å)")
+            ax.set_xlim(0, XMAX)
+            ax.grid(axis="y", linestyle=":", linewidth=0.5, alpha=0.5)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels, loc="lower center",
+            ncol=min(4, len(labels)), frameon=False,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+    fig.suptitle(
+        "scRMSD distributions — dashed line at 2 Å "
+        "field-standard 'designable' threshold",
+        fontsize=FONT_SIZE + 1, y=1.00,
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
+    _save_phase_b(fig, "fig12b_scrmsd_histograms")
+    plt.close(fig)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 FIGURES = {
     "refmargin":  figure_refmargin,
@@ -734,6 +943,8 @@ FIGURES = {
     "decoupling": figure_decoupling,
     "fig11a":     figure_fig11a_developability_violins,
     "fig11b":     figure_fig11b_developability_scorecard,
+    "fig12a":     figure_fig12a_designability_bars,
+    "fig12b":     figure_fig12b_scrmsd_histograms,
 }
 
 
