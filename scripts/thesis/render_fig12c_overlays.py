@@ -96,11 +96,13 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
         f"show #2/{gen} cartoon",
         # Sequence-based superposition of generated onto GT, heavy chain only
         f"matchmaker #2/{gen} to #1/{gt}",
-        # Colour scheme: GT grey w/ transparency, gen slate, CDRs distinct
-        "color #1 gray60",
-        "color #2 slate",
+        # Colour scheme: GT light-grey w/ transparency, gen cornflower-blue,
+        # CDRs distinct. Names chosen from ChimeraX's CSS3-standard palette
+        # — `gray60` / `slate` are NOT recognised by ChimeraX 1.12-rc.
+        'color #1 "light gray"',
+        "color #2 cornflowerblue",
         f"color #2/{gen}:26-32 salmon",
-        f'color #2/{gen}:52-56 "light orange"',
+        f"color #2/{gen}:52-56 orange",
         f"color #2/{gen}:{h3} magenta",
         "hide atoms",
         "transparency #1 60 cartoons",
@@ -125,7 +127,10 @@ def render_panel(panel: dict, chimerax_bin: str, out_dir: Path) -> None:
     print(f"\n=== {panel['name']} ===")
     print(f"  {panel['note']}")
     print(f"  cxc: {cxc_path.relative_to(PROJECT_ROOT)}")
-    cmd = [chimerax_bin, "--nogui", "--offscreen", "--silent", str(cxc_path)]
+    # --nogui = headless on macOS (no --offscreen needed — that flag is Linux/EGL).
+    # --exit forces ChimeraX to quit at the end of the script even if a command
+    # errors, preventing the "drop to interactive cmd> prompt" hang we saw.
+    cmd = [chimerax_bin, "--nogui", "--exit", str(cxc_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"  STDOUT: {result.stdout}")
