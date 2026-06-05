@@ -127,10 +127,12 @@ def render_panel(panel: dict, chimerax_bin: str, out_dir: Path) -> None:
     print(f"\n=== {panel['name']} ===")
     print(f"  {panel['note']}")
     print(f"  cxc: {cxc_path.relative_to(PROJECT_ROOT)}")
-    # --nogui = headless on macOS (no --offscreen needed — that flag is Linux/EGL).
-    # --exit forces ChimeraX to quit at the end of the script even if a command
-    # errors, preventing the "drop to interactive cmd> prompt" hang we saw.
-    cmd = [chimerax_bin, "--nogui", "--exit", str(cxc_path)]
+    # --nogui = headless, --offscreen = create an OSMesa GL context for the
+    # renderer (--nogui alone leaves us without a GL context on macOS, so the
+    # save command silently fails with "OpenGL rendering not available").
+    # --exit forces ChimeraX to quit at end-of-script (or on error) instead
+    # of dropping to the interactive cmd> prompt — that was the original hang.
+    cmd = [chimerax_bin, "--nogui", "--offscreen", "--exit", str(cxc_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"  STDOUT: {result.stdout}")
