@@ -92,6 +92,23 @@ def derive_cdr_indices_from_generated(gen_residues):
     return cdr_idx
 
 
+def find_pred_offset_in_gen(gen_residues, pred_residues):
+    """Find offset where pred-sequence matches as substring of gen-sequence.
+
+    ABodyBuilder2 uses ANARCI to detect the V-domain envelope and silently
+    trims residues outside it (typically a small C-terminal tail past the J
+    motif). When that happens, pred is a contiguous substring of gen at some
+    offset; the i-th pred residue is the predicted fold of the (i+offset)-th
+    gen residue. Returns offset (≥0) or None on no match.
+    """
+    if len(gen_residues) < len(pred_residues):
+        return None
+    gen_seq = "".join(AA3[r.get_resname()] for r in gen_residues)
+    pred_seq = "".join(AA3[r.get_resname()] for r in pred_residues)
+    idx = gen_seq.find(pred_seq)
+    return idx if idx >= 0 else None
+
+
 def kabsch(P, Q):
     """Optimal rotation+translation mapping P → Q (both (N,3) arrays)."""
     Pc = P - P.mean(0)
@@ -119,6 +136,7 @@ def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id,
 
     out = {
         "n_gen_res": n_gen, "n_pred_res": n_pred,
+        "gen_trim_offset": 0, "gen_trim_n_dropped": 0,
         "seq_identity_pct": np.nan,
         "fw_atoms": 0,
         "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
@@ -129,9 +147,18 @@ def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id,
     if n_gen == 0 or n_pred == 0:
         out["error"] = f"empty_chain_gen{n_gen}_pred{n_pred}"
         return out
+
+    # Handle ANARCI's V-domain trim (pred is a substring of gen, usually
+    # C-terminal trim by 1-4 residues). Falls back to count-equality otherwise.
     if n_gen != n_pred:
-        out["error"] = f"residue_count_mismatch_{n_gen}_vs_{n_pred}"
-        return out
+        offset = find_pred_offset_in_gen(gen_res, pred_res)
+        if offset is None:
+            out["error"] = f"seq_no_substring_match_{n_gen}_vs_{n_pred}"
+            return out
+        out["gen_trim_offset"] = offset
+        out["gen_trim_n_dropped"] = n_gen - n_pred
+        gen_res = gen_res[offset: offset + n_pred]
+        n_gen = len(gen_res)
 
     # Sequence identity sanity (should be 100% — same sequence input/output)
     seq_match = sum(
@@ -243,6 +270,7 @@ def main():
                 rows.append({
                     **meta, "pdb_path": pdb,
                     "n_gen_res": 0, "n_pred_res": 0,
+                    "gen_trim_offset": 0, "gen_trim_n_dropped": 0,
                     "seq_identity_pct": np.nan,
                     "fw_atoms": 0,
                     "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
@@ -258,6 +286,8 @@ def main():
                 print(f"DEBUG first PDB: {pdb}", flush=True)
                 print(f"  gen_chain={chain_id}, seq_len={len(seq)}", flush=True)
                 print(f"  n_gen_res={sc['n_gen_res']} n_pred_res={sc['n_pred_res']} "
+                      f"gen_trim_offset={sc['gen_trim_offset']} "
+                      f"gen_trim_n_dropped={sc['gen_trim_n_dropped']} "
                       f"seq_identity_pct={sc['seq_identity_pct']}", flush=True)
                 print(f"  fw_atoms={sc['fw_atoms']} "
                       f"H1_atoms={sc['H1_atoms']} H2_atoms={sc['H2_atoms']} "
