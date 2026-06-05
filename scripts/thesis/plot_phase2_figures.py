@@ -479,6 +479,252 @@ def figure_decoupling() -> None:
     plt.close(fig)
 
 
+# ── Brief 11 (Phase B) — design-sample developability figures ───────────
+FIG_B_DIR = PROJECT_ROOT / "docs" / "figures" / "phase_b"
+DESIGN_MASTER  = PROJECT_ROOT / "data/eval/design_samples_master.parquet"
+GT_CALIBRATION = PROJECT_ROOT / "data/results/andd_calibration_full.parquet"
+
+# Per-variant palette: π_ref blues, π_θ reds; darker = expanded
+VARIANT_COLOR = {
+    "seed42_jfix":       "#4a90d9",
+    "floor_pi_theta":    "#c64a4a",
+    "expanded_pi_ref":   "#1f4d7a",
+    "expanded_pi_theta": "#a01616",
+}
+VARIANT_ORDER = ["seed42_jfix", "floor_pi_theta", "expanded_pi_ref", "expanded_pi_theta"]
+VARIANT_LABEL = {
+    "seed42_jfix":       r"seed42_jfix π$_{\mathrm{ref}}$",
+    "floor_pi_theta":    r"floor π$_\theta$",
+    "expanded_pi_ref":   r"expanded π$_{\mathrm{ref}}$",
+    "expanded_pi_theta": r"expanded π$_\theta$",
+}
+COLOR_GT          = "#7a7a7a"
+COLOR_BAND_STRICT = "#1f3a93"   # locked p80
+COLOR_BAND_CLIN   = "#a3c9f1"   # clinical-span (catalog §5)
+COLOR_GREEN = "#2ca02c"
+COLOR_AMBER = "#ff7f0e"
+COLOR_RED   = "#d62728"
+
+# Locked p80 bands (mirror src/common/config.py — keep in sync if those move)
+STRICT_BANDS = {
+    "psh_score":   (79.59, 126.83),
+    "ppc_score":   (None, 0.39),      # upper-bound only
+    "compactness": (0.81, 1.57),
+    "e_rep":       (None, +3.271),    # upper-bound only
+    "cdr_energy_per_res": (None, +2.844),  # upper-bound only
+}
+# Clinical-span bands per Brief 11 §3 (catalog §5 TNP entry).
+# Compactness clinical span not specified in the catalog → omit.
+CLINICAL_BANDS = {
+    "psh_score": (73.4, 155.5),
+    "ppc_score": (None, 1.18),
+}
+
+
+def _save_phase_b(fig: plt.Figure, name: str) -> None:
+    FIG_B_DIR.mkdir(parents=True, exist_ok=True)
+    png = FIG_B_DIR / f"{name}.png"
+    pdf = FIG_B_DIR / f"{name}.pdf"
+    fig.savefig(png)
+    fig.savefig(pdf)
+    print(f"  wrote {png.relative_to(PROJECT_ROOT)}  +  {pdf.name}")
+
+
+def _load_design_master() -> pd.DataFrame:
+    if not DESIGN_MASTER.exists():
+        raise FileNotFoundError(
+            f"{DESIGN_MASTER} not found — run scripts/eval/build_master_parquet.py first."
+        )
+    return pd.read_parquet(DESIGN_MASTER)
+
+
+def _load_gt_calibration() -> pd.DataFrame:
+    gt = pd.read_parquet(GT_CALIBRATION)
+    if "is_valid" in gt.columns:
+        gt = gt[gt["is_valid"]]
+    return gt
+
+
+def figure_fig11a_developability_violins() -> None:
+    """Brief 11 Figure A — design-sample developability vs GT calibration.
+
+    2×5 grid: rows = test set (OLD top, NEW bottom),
+    cols = (PSH, PPC, E_Rep, CDR_E/res, ΔG_separated).
+    Per panel: violins for each variant present + GT calibration in grey
+    + strict-p80 (dark blue) and clinical-span (light blue) bands.
+
+    Caption (slot-in for thesis): "Distributions of TNP (PSH, PPC) and
+    Rosetta (E_Rep, CDR-Ag interface energy per residue, ΔG_separated
+    via InterfaceAnalyzerMover) metrics computed on the single-CDR
+    design samples (n=29 OLD test × 4 samples × 3 CDRs = 348 per
+    variant on OLD; 83 × 4 × 3 = 996 on NEW). Grey violins = the
+    465-entry ANDD calibration set (real VHH crystals); dark-blue band
+    = locked p80 thresholds from src/common/config.py (the AAPR-judge
+    cutoffs); light-blue band = clinical-stage span from the
+    therapeutic nanobody catalog (Gordon et al. 2026)."
+    """
+    print("=== Figure 11.A: developability violins (2×5 grid) ===")
+    master = _load_design_master()
+    gt = _load_gt_calibration()
+
+    metric_specs = [
+        ("psh_score",          "PSH"),
+        ("ppc_score",          "PPC"),
+        ("e_rep",              "E_Rep (REU)"),
+        ("cdr_energy_per_res", "CDR_E / res (REU/res)"),
+        ("dG_separated",       r"ΔG$_{\mathrm{separated}}$ (REU)"),
+    ]
+    test_sets = [("oldtest", "OLD test"), ("newtest", "NEW test")]
+
+    fig, axes = plt.subplots(2, 5, figsize=(15, 7), sharex=False)
+    for row_idx, (ts_key, ts_label) in enumerate(test_sets):
+        sub = master[master["test_set"] == ts_key]
+        n_entries = sub["entry_id"].nunique() if len(sub) else 0
+        variants_present = [v for v in VARIANT_ORDER if v in sub["variant"].unique()]
+
+        for col_idx, (col, mlabel) in enumerate(metric_specs):
+            ax = axes[row_idx, col_idx]
+
+            data, colors, ticks = [], [], []
+            if col in gt.columns:
+                gv = pd.to_numeric(gt[col], errors="coerce").dropna().values
+                if len(gv):
+                    data.append(gv); colors.append(COLOR_GT); ticks.append("GT")
+            for v in variants_present:
+                vv = pd.to_numeric(sub.loc[sub["variant"] == v, col], errors="coerce").dropna().values
+                if len(vv):
+                    data.append(vv)
+                    colors.append(VARIANT_COLOR[v])
+                    ticks.append(VARIANT_LABEL.get(v, v))
+
+            if not data:
+                ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+                ax.set_xticks([])
+                if row_idx == 0:
+                    ax.set_title(mlabel)
+                continue
+
+            # Bands
+            clin = CLINICAL_BANDS.get(col)
+            if clin:
+                lo, hi = clin
+                if lo is None: lo = ax.get_ylim()[0]
+                if hi is None: hi = ax.get_ylim()[1]
+                ax.axhspan(lo, hi, facecolor=COLOR_BAND_CLIN, alpha=0.20, zorder=0)
+            strict = STRICT_BANDS.get(col)
+            if strict:
+                lo, hi = strict
+                if lo is not None and hi is not None:
+                    ax.axhspan(lo, hi, facecolor=COLOR_BAND_STRICT, alpha=0.18, zorder=1)
+                elif hi is not None:
+                    ax.axhline(hi, color=COLOR_BAND_STRICT, linestyle="--",
+                               linewidth=0.9, alpha=0.85, zorder=1)
+
+            parts = ax.violinplot(data, showmedians=True, widths=0.75)
+            for body, c in zip(parts["bodies"], colors):
+                body.set_facecolor(c); body.set_edgecolor(c); body.set_alpha(0.65)
+            for key in ("cmedians", "cmins", "cmaxes", "cbars"):
+                if key in parts:
+                    parts[key].set_color("0.25"); parts[key].set_linewidth(0.8)
+
+            ax.set_xticks(range(1, len(data) + 1))
+            ax.set_xticklabels(ticks, rotation=35, ha="right",
+                               fontsize=FONT_SIZE - 2)
+            if col_idx == 0:
+                ax.set_ylabel(f"{ts_label} (n={n_entries})", fontsize=FONT_SIZE)
+            if row_idx == 0:
+                ax.set_title(mlabel)
+
+    fig.suptitle(
+        "Design-sample developability vs GT calibration (n=465) "
+        "with locked p80 (dark blue) and clinical-span (light blue) bands",
+        y=1.00, fontsize=FONT_SIZE + 1,
+    )
+    fig.tight_layout()
+    _save_phase_b(fig, "fig11a_developability_violins")
+    plt.close(fig)
+
+
+def figure_fig11b_developability_scorecard() -> None:
+    """Brief 11 Figure B — 3-axis TNP Green/Amber/Red scorecard.
+
+    Per-row horizontal stacked bar showing % of design samples in each
+    Green/Amber/Red bucket. Bucket = #-of-3-TNP-axes-inside-band
+    (PSH ∩ PPC ∩ compactness). GT calibration shown at the top as the
+    real-VHH reference distribution under the same locked p80 thresholds.
+
+    Caption: "TNP composite developability scorecard. Green = all three
+    thresholded axes (PSH, PPC, compactness) inside their locked
+    p80 bands; Amber = 2 of 3 inside; Red = ≤ 1 inside. GT calibration
+    row is the 465-entry ANDD natural-VHH set under identical thresholds
+    (provides the field-baseline % Green a model would need to match to
+    'look like real VHHs')."
+    """
+    print("=== Figure 11.B: TNP Green/Amber/Red scorecard ===")
+    master = _load_design_master()
+    gt = _load_gt_calibration()
+
+    # GT GAR
+    gt = gt.copy()
+    gt["psh_in"]  = gt["psh_score"].between(*STRICT_BANDS["psh_score"], inclusive="both") if STRICT_BANDS["psh_score"][0] is not None else False
+    gt["ppc_in"]  = gt["ppc_score"] <= STRICT_BANDS["ppc_score"][1]
+    gt["comp_in"] = gt["compactness"].between(*STRICT_BANDS["compactness"], inclusive="both")
+    gt["n_pass"]  = gt[["psh_in", "ppc_in", "comp_in"]].sum(axis=1)
+    def _gar(n): return "Green" if n == 3 else "Amber" if n == 2 else "Red"
+    gt["gar"] = gt["n_pass"].apply(_gar)
+    gt_gar = gt["gar"].value_counts(normalize=True)
+
+    rows = [(f"GT calibration (n={len(gt)})",
+             100 * gt_gar.get("Green", 0), 100 * gt_gar.get("Amber", 0), 100 * gt_gar.get("Red", 0))]
+
+    for ts_label, ts_key in [("OLD test", "oldtest"), ("NEW test", "newtest")]:
+        sub_all = master[master["test_set"] == ts_key]
+        for v in VARIANT_ORDER:
+            sub = sub_all[sub_all["variant"] == v]
+            if len(sub) == 0:
+                continue
+            gar = sub["gar_flag"].value_counts(normalize=True)
+            label_v = VARIANT_LABEL.get(v, v)
+            label = f"{label_v} — {ts_label} (n={len(sub)})"
+            rows.append((
+                label,
+                100 * gar.get("Green", 0),
+                100 * gar.get("Amber", 0),
+                100 * gar.get("Red",   0),
+            ))
+
+    fig, ax = plt.subplots(figsize=(9, max(3.2, 0.45 * len(rows) + 1.0)))
+    labels = [r[0] for r in rows][::-1]
+    greens = np.array([r[1] for r in rows][::-1])
+    ambers = np.array([r[2] for r in rows][::-1])
+    reds   = np.array([r[3] for r in rows][::-1])
+    y = np.arange(len(labels))
+
+    ax.barh(y, greens, color=COLOR_GREEN, alpha=0.85, label="Green (3/3)")
+    ax.barh(y, ambers, left=greens,                 color=COLOR_AMBER, alpha=0.85, label="Amber (2/3)")
+    ax.barh(y, reds,   left=greens + ambers,        color=COLOR_RED,   alpha=0.85, label="Red (≤ 1/3)")
+
+    for i in range(len(labels)):
+        g, a, r = greens[i], ambers[i], reds[i]
+        if g > 6: ax.text(g / 2,            i, f"{g:.0f}%", ha="center", va="center", color="white", fontsize=FONT_SIZE - 2)
+        if a > 6: ax.text(g + a / 2,        i, f"{a:.0f}%", ha="center", va="center", color="white", fontsize=FONT_SIZE - 2)
+        if r > 6: ax.text(g + a + r / 2,    i, f"{r:.0f}%", ha="center", va="center", color="white", fontsize=FONT_SIZE - 2)
+
+    ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=FONT_SIZE - 1)
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Share of samples (%)")
+    ax.set_title(
+        "3-axis TNP developability scorecard "
+        "(PSH ∩ PPC ∩ compactness inside locked p80 bands)"
+    )
+    ax.legend(loc="lower center", frameon=False, ncol=3,
+              bbox_to_anchor=(0.5, -0.18))
+    ax.grid(axis="x", linestyle=":", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+    _save_phase_b(fig, "fig11b_developability_scorecard")
+    plt.close(fig)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 FIGURES = {
     "refmargin":  figure_refmargin,
@@ -486,6 +732,8 @@ FIGURES = {
     "dpocurve":   figure_dpocurve,
     "ablation":   figure_ablation,
     "decoupling": figure_decoupling,
+    "fig11a":     figure_fig11a_developability_violins,
+    "fig11b":     figure_fig11b_developability_scorecard,
 }
 
 
