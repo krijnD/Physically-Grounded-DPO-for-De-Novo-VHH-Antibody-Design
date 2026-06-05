@@ -5,6 +5,20 @@ the generated backbone on framework Cα atoms, and computes per-CDR Cα RMSD.
 
 Persists one parquet shard per array task; merge handled downstream in Step 4.
 
+Alignment strategy:
+    Both PDBs encode the *same* 114-ish-residue VHH sequence (the predictor is
+    folding the sequence we extracted from the generated PDB). They use
+    DIFFERENT numbering conventions, though: generated PDBs use sequential
+    resseq 1..N; ABodyBuilder2 emits a canonical-numbered output with gaps.
+    Matching residues by resseq therefore fails. Instead, we match by chain
+    iteration order — the i-th standard residue of the generated chain
+    corresponds to the i-th standard residue of the predicted chain by
+    construction. CDR boundary indices are derived from the generated PDB's
+    resseq (where the H1=26-32 / H2=52-56 / H3=95-102 windows are known to
+    work — Brief 12 Step 1c), then applied as positional indices to both
+    PDBs. `seq_identity_pct` is emitted as a sanity column — should be 100%
+    on every row.
+
 Usage:
     python scripts/eval/run_scrmsd_array.py \\
         --pdb-roots <root1> [<root2> ...] \\
@@ -32,8 +46,8 @@ AA3 = {
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
 
-# CDR position windows confirmed against Brief 11 PDB sample (Brief 12 Step 1c).
-# Convention: integer resseq under the project's author-numbered VHH parser.
+# CDR position windows on the GENERATED PDB's sequential resseq numbering.
+# Confirmed against a Brief 11 PDB in Step 1c (H1=7, H2=5, H3=8 residues).
 CDR_WINDOWS = {"H1": (26, 32), "H2": (52, 56), "H3": (95, 102)}
 
 
@@ -52,39 +66,30 @@ def extract_heavy_seq(pdb_path):
     return None, None
 
 
-def get_ca_coords(pdb_path, chain_id, resseq_range):
-    """Return (N, 3) Cα coord array for residues with resseq in [lo, hi]."""
+def get_chain_residues(pdb_path, chain_id):
+    """Return ordered list of standard residues (resname ∈ AA3) on chain."""
     parser = PDBParser(QUIET=True)
     struct = parser.get_structure("x", pdb_path)
-    coords = []
     for chain in struct.get_chains():
         if chain.id != chain_id:
             continue
-        for r in chain.get_residues():
-            if r.id[0] != " ":
-                continue
-            resseq = r.id[1]
-            if resseq_range[0] <= resseq <= resseq_range[1] and "CA" in r:
-                coords.append(r["CA"].get_coord())
-    return np.array(coords) if coords else np.zeros((0, 3))
+        return [
+            r for r in chain.get_residues()
+            if r.id[0] == " " and r.get_resname() in AA3
+        ]
+    return []
 
 
-def framework_ca(pdb_path, chain_id):
-    """Cα coords on framework only (exclude H1/H2/H3 windows)."""
-    parser = PDBParser(QUIET=True)
-    struct = parser.get_structure("x", pdb_path)
-    coords = []
-    for chain in struct.get_chains():
-        if chain.id != chain_id:
-            continue
-        for r in chain.get_residues():
-            if r.id[0] != " ":
-                continue
-            resseq = r.id[1]
-            in_cdr = any(lo <= resseq <= hi for (lo, hi) in CDR_WINDOWS.values())
-            if not in_cdr and "CA" in r:
-                coords.append(r["CA"].get_coord())
-    return np.array(coords) if coords else np.zeros((0, 3))
+def derive_cdr_indices_from_generated(gen_residues):
+    """Map CDR_WINDOWS (sequential resseq on generated PDB) → chain-order indices."""
+    cdr_idx = {"H1": [], "H2": [], "H3": []}
+    for i, r in enumerate(gen_residues):
+        resseq = r.id[1]
+        for cdr, (lo, hi) in CDR_WINDOWS.items():
+            if lo <= resseq <= hi:
+                cdr_idx[cdr].append(i)
+                break
+    return cdr_idx
 
 
 def kabsch(P, Q):
@@ -100,33 +105,73 @@ def kabsch(P, Q):
     return R, t
 
 
-def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id, pred_chain_id="H"):
-    """Return dict of per-CDR scRMSD after framework Kabsch alignment."""
-    gen_fw = framework_ca(generated_pdb, gen_chain_id)
-    pred_fw = framework_ca(predicted_pdb, pred_chain_id)
+def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id,
+                   pred_chain_id="H"):
+    """Per-CDR scRMSD via chain-order-index alignment.
+
+    Returns a dict with: n_gen_res, n_pred_res, seq_identity_pct,
+    fw_atoms, H1_atoms, H2_atoms, H3_atoms, scrmsd_H1, scrmsd_H2,
+    scrmsd_H3, error.
+    """
+    gen_res = get_chain_residues(generated_pdb, gen_chain_id)
+    pred_res = get_chain_residues(predicted_pdb, pred_chain_id)
+    n_gen, n_pred = len(gen_res), len(pred_res)
+
     out = {
-        "fw_atoms_gen": int(len(gen_fw)),
-        "fw_atoms_pred": int(len(pred_fw)),
+        "n_gen_res": n_gen, "n_pred_res": n_pred,
+        "seq_identity_pct": np.nan,
+        "fw_atoms": 0,
+        "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
+        "scrmsd_H1": np.nan, "scrmsd_H2": np.nan, "scrmsd_H3": np.nan,
+        "error": None,
     }
-    if len(gen_fw) == 0 or len(pred_fw) == 0 or len(gen_fw) != len(pred_fw):
-        out.update({
-            "H1": np.nan, "H2": np.nan, "H3": np.nan,
-            "error": f"fw_atom_mismatch_{len(gen_fw)}_vs_{len(pred_fw)}",
-        })
+
+    if n_gen == 0 or n_pred == 0:
+        out["error"] = f"empty_chain_gen{n_gen}_pred{n_pred}"
         return out
+    if n_gen != n_pred:
+        out["error"] = f"residue_count_mismatch_{n_gen}_vs_{n_pred}"
+        return out
+
+    # Sequence identity sanity (should be 100% — same sequence input/output)
+    seq_match = sum(
+        1 for i in range(n_gen)
+        if gen_res[i].get_resname() == pred_res[i].get_resname()
+    )
+    out["seq_identity_pct"] = round(100 * seq_match / n_gen, 1)
+
+    cdr_idx = derive_cdr_indices_from_generated(gen_res)
+    cdr_set = set().union(*cdr_idx.values())
+
+    fw_indices = [
+        i for i in range(n_gen)
+        if i not in cdr_set
+        and "CA" in gen_res[i]
+        and "CA" in pred_res[i]
+    ]
+    out["fw_atoms"] = len(fw_indices)
+    if not fw_indices:
+        out["error"] = "no_framework_ca"
+        return out
+
+    gen_fw = np.array([gen_res[i]["CA"].get_coord() for i in fw_indices])
+    pred_fw = np.array([pred_res[i]["CA"].get_coord() for i in fw_indices])
     R, t = kabsch(pred_fw, gen_fw)
-    for cdr, win in CDR_WINDOWS.items():
-        gen_cdr = get_ca_coords(generated_pdb, gen_chain_id, win)
-        pred_cdr = get_ca_coords(predicted_pdb, pred_chain_id, win)
-        out[f"{cdr}_atoms_gen"] = int(len(gen_cdr))
-        out[f"{cdr}_atoms_pred"] = int(len(pred_cdr))
-        if len(gen_cdr) == 0 or len(pred_cdr) == 0 or len(gen_cdr) != len(pred_cdr):
-            out[cdr] = np.nan
+
+    for cdr in ["H1", "H2", "H3"]:
+        valid = [
+            i for i in cdr_idx[cdr]
+            if "CA" in gen_res[i] and "CA" in pred_res[i]
+        ]
+        out[f"{cdr}_atoms"] = len(valid)
+        if not valid:
             continue
+        gen_cdr = np.array([gen_res[i]["CA"].get_coord() for i in valid])
+        pred_cdr = np.array([pred_res[i]["CA"].get_coord() for i in valid])
         pred_cdr_aligned = (R @ pred_cdr.T).T + t
         rmsd = float(np.sqrt(((gen_cdr - pred_cdr_aligned) ** 2).sum(1).mean()))
-        out[cdr] = rmsd
-    out["error"] = None
+        out[f"scrmsd_{cdr}"] = rmsd
+
     return out
 
 
@@ -197,6 +242,10 @@ def main():
             if not seq:
                 rows.append({
                     **meta, "pdb_path": pdb,
+                    "n_gen_res": 0, "n_pred_res": 0,
+                    "seq_identity_pct": np.nan,
+                    "fw_atoms": 0,
+                    "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
                     "scrmsd_H1": np.nan, "scrmsd_H2": np.nan, "scrmsd_H3": np.nan,
                     "error": "no_heavy_chain",
                 })
@@ -208,20 +257,15 @@ def main():
             if debug_first:
                 print(f"DEBUG first PDB: {pdb}", flush=True)
                 print(f"  gen_chain={chain_id}, seq_len={len(seq)}", flush=True)
-                print(f"  fw_atoms gen={sc['fw_atoms_gen']} "
-                      f"pred={sc['fw_atoms_pred']}", flush=True)
-                print(f"  per-CDR: H1={sc.get('H1')} "
-                      f"H2={sc.get('H2')} H3={sc.get('H3')}", flush=True)
+                print(f"  n_gen_res={sc['n_gen_res']} n_pred_res={sc['n_pred_res']} "
+                      f"seq_identity_pct={sc['seq_identity_pct']}", flush=True)
+                print(f"  fw_atoms={sc['fw_atoms']} "
+                      f"H1_atoms={sc['H1_atoms']} H2_atoms={sc['H2_atoms']} "
+                      f"H3_atoms={sc['H3_atoms']}", flush=True)
+                print(f"  scrmsd: H1={sc['scrmsd_H1']} H2={sc['scrmsd_H2']} "
+                      f"H3={sc['scrmsd_H3']}", flush=True)
                 debug_first = False
-            row = {
-                **meta, "pdb_path": pdb,
-                "scrmsd_H1": sc.get("H1"),
-                "scrmsd_H2": sc.get("H2"),
-                "scrmsd_H3": sc.get("H3"),
-                "fw_atoms_gen": sc.get("fw_atoms_gen"),
-                "fw_atoms_pred": sc.get("fw_atoms_pred"),
-                "error": sc.get("error"),
-            }
+            row = {**meta, "pdb_path": pdb, **sc}
             rows.append(row)
             try:
                 os.unlink(tmp_pred)
@@ -232,6 +276,10 @@ def main():
         except Exception as e:  # noqa: BLE001
             rows.append({
                 **meta, "pdb_path": pdb,
+                "n_gen_res": 0, "n_pred_res": 0,
+                "seq_identity_pct": np.nan,
+                "fw_atoms": 0,
+                "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
                 "scrmsd_H1": np.nan, "scrmsd_H2": np.nan, "scrmsd_H3": np.nan,
                 "error": str(e)[:200],
             })
