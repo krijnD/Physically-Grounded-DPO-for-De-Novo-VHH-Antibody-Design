@@ -82,10 +82,14 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
     gt = panel["gt_chain"]
     gen = panel["gen_chain"]
     h3 = panel["h3_window"]
+    # Paths may contain spaces (e.g. "/Users/.../Master Thesis/..."); ChimeraX
+    # tokenises on whitespace so wrap every filename in literal double quotes.
+    gt_pdb = panel["gt_pdb"]
+    gen_pdb = panel["gen_pdb"]
     return [
         f"# {panel['note']}",
-        f"open {panel['gt_pdb']}",
-        f"open {panel['gen_pdb']}",
+        f'open "{gt_pdb}"',
+        f'open "{gen_pdb}"',
         # Restrict cartoons to the heavy chain on both models
         "hide cartoon",
         f"show #1/{gt} cartoon",
@@ -108,7 +112,7 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
         f"view #2/{gen}:{h3}",
         "zoom 0.7",
         # Render
-        f"save {out_png} width 1600 height 1200 supersample 3",
+        f'save "{out_png}" width 1600 height 1200 supersample 3',
         "exit",
     ]
 
