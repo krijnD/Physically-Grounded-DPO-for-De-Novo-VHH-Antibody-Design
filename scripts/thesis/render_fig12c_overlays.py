@@ -77,7 +77,7 @@ def find_chimerax_mac() -> str | None:
     return candidates[0] if candidates else None
 
 
-def build_cxc(panel: dict, out_dir: Path) -> list[str]:
+def build_cxc(panel: dict, out_dir: Path, args) -> list[str]:
     out_png = out_dir / f"{panel['name']}.png"
     gt = panel["gt_chain"]
     gen = panel["gen_chain"]
@@ -86,7 +86,9 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
     # tokenises on whitespace so wrap every filename in literal double quotes.
     gt_pdb = panel["gt_pdb"]
     gen_pdb = panel["gen_pdb"]
-    return [
+    focus_sel = f"#2/{gen}" if args.focus == "chain" else f"#2/{gen}:{h3}"
+
+    lines = [
         f"# {panel['note']}",
         f'open "{gt_pdb}"',
         f'open "{gen_pdb}"',
@@ -97,8 +99,8 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
         # Sequence-based superposition of generated onto GT, heavy chain only
         f"matchmaker #2/{gen} to #1/{gt}",
         # Colour scheme: GT light-grey w/ transparency, gen cornflower-blue,
-        # CDRs distinct. Names chosen from ChimeraX's CSS3-standard palette
-        # — `gray60` / `slate` are NOT recognised by ChimeraX 1.12-rc.
+        # CDRs distinct. CSS3-standard names (ChimeraX 1.12-rc rejects
+        # `gray60` / `slate`).
         'color #1 "light gray"',
         "color #2 cornflowerblue",
         f"color #2/{gen}:26-32 salmon",
@@ -110,17 +112,26 @@ def build_cxc(panel: dict, out_dir: Path) -> list[str]:
         "set bgColor white",
         "graphics silhouettes true",
         "lighting soft",
-        # Camera on H3 region of the generated model
-        f"view #2/{gen}:{h3}",
-        "zoom 0.7",
-        # Render
+        # Camera: focus, optional extra zoom, optional rotations
+        f"view {focus_sel}",
+    ]
+    if args.zoom != 1.0:
+        lines.append(f"zoom {args.zoom}")
+    if args.turn_x:
+        lines.append(f"turn x {args.turn_x}")
+    if args.turn_y:
+        lines.append(f"turn y {args.turn_y}")
+    if args.turn_z:
+        lines.append(f"turn z {args.turn_z}")
+    lines.extend([
         f'save "{out_png}" width 1600 height 1200 supersample 3',
         "exit",
-    ]
+    ])
+    return lines
 
 
-def render_panel(panel: dict, chimerax_bin: str, out_dir: Path) -> None:
-    cxc_lines = build_cxc(panel, out_dir)
+def render_panel(panel: dict, chimerax_bin: str, out_dir: Path, args) -> None:
+    cxc_lines = build_cxc(panel, out_dir, args)
     cxc_path = out_dir / f"{panel['name']}.cxc"
     cxc_path.write_text("\n".join(cxc_lines) + "\n")
 
@@ -159,6 +170,25 @@ def main() -> int:
                          "/Applications/ChimeraX*.app.")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT),
                     help=f"Output dir for PNG + .cxc (default {DEFAULT_OUT})")
+    ap.add_argument("--focus", choices=["chain", "h3"], default="chain",
+                    help="Camera framing target. 'chain' (default) fits the "
+                         "whole VHH heavy chain so the reader sees the "
+                         "antibody silhouette with H3 highlighted in context. "
+                         "'h3' frames just the H3 window (the OLD behaviour, "
+                         "useful for a tight close-up).")
+    ap.add_argument("--zoom", type=float, default=1.0,
+                    help="Extra zoom applied AFTER the view-fit. <1 widens "
+                         "(zoom out), >1 tightens (zoom in). Default 1.0.")
+    ap.add_argument("--turn-x", type=float, default=0.0,
+                    help="Camera rotation about X (degrees) — tilts up/down")
+    ap.add_argument("--turn-y", type=float, default=0.0,
+                    help="Camera rotation about Y (degrees) — pans left/right")
+    ap.add_argument("--turn-z", type=float, default=0.0,
+                    help="Camera rotation about Z (degrees) — rolls")
+    ap.add_argument("--only", choices=["short", "long"], default=None,
+                    help="Render only one panel (short = 7n9v_J success, "
+                         "long = 8elq_B failure). Useful when iterating on "
+                         "framing. Omit to render both.")
     args = ap.parse_args()
 
     chimerax = args.chimerax or find_chimerax_mac()
@@ -174,7 +204,13 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output:  {out_dir}")
 
-    for panel in PANELS:
+    panels_to_render = PANELS
+    if args.only == "short":
+        panels_to_render = [PANELS[0]]
+    elif args.only == "long":
+        panels_to_render = [PANELS[1]]
+
+    for panel in panels_to_render:
         for k in ("gt_pdb", "gen_pdb"):
             if not panel[k].exists():
                 sys.exit(
@@ -183,7 +219,7 @@ def main() -> int:
                     f"  Rsync from Snellius first; see brief 12 Step 6 "
                     f"instructions."
                 )
-        render_panel(panel, chimerax, out_dir)
+        render_panel(panel, chimerax, out_dir, args)
 
     print("\nDone.")
     return 0
