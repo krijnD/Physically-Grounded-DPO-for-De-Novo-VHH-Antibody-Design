@@ -32,6 +32,8 @@ Usage:
     python scripts/thesis/render_fig12c_overlays.py \\
         --chimerax /Applications/ChimeraX-1.8.app/Contents/MacOS/ChimeraX
 """
+from __future__ import annotations
+
 import argparse
 import glob
 import subprocess
