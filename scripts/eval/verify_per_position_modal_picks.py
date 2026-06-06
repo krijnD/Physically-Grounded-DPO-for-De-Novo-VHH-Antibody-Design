@@ -274,20 +274,32 @@ def stage_c_pdb():
     chains = list(s.get_chains())
     print(f"Chains: {[(c.id, sum(1 for r in c.get_residues() if r.id[0]==' ')) for c in chains]}")
 
-    # entry_id = 7n9v_J → VHH chain hint = 'J'
-    vhh_chain_id = "J"
-    chain = next((c for c in chains if c.id == vhh_chain_id), None)
+    # Try to derive the VHH chain hint from the master parquet row matching
+    # this pdb_filepath; fall back to length-classify if not found.
+    vhh_hint = None
+    try:
+        m = pd.read_parquet(MASTER_PARQUET)
+        row = m[m["pdb_filepath"].astype(str) == str(pdb_path)]
+        if len(row):
+            entry_id = row.iloc[0]["entry_id"]
+            vhh_hint = entry_id.rsplit("_", 1)[-1] if "_" in entry_id else None
+            print(f"Master row entry_id={entry_id}, vhh_hint='{vhh_hint}'")
+    except Exception as e:
+        print(f"(could not derive vhh_hint from master parquet: {e})")
+
+    chain = None
+    if vhh_hint is not None:
+        chain = next((c for c in chains if c.id == vhh_hint), None)
     if chain is None:
-        # Fall back to longest polymer chain in [100, 160]
         for c in chains:
             n = sum(1 for r in c.get_residues() if r.id[0] == " ")
             if 100 <= n <= 160:
                 chain = c
-                vhh_chain_id = c.id
                 break
     if chain is None:
         print("FATAL: no VHH chain found")
         return
+    vhh_chain_id = chain.id
     print(f"VHH chain: {vhh_chain_id}")
 
     # Build (resseq → aa1) mapping
@@ -331,17 +343,36 @@ def stage_c_pdb():
                   f"→ resseqs {resseqs_for_query[0]}..{resseqs_for_query[-1]}")
             break
 
-    # Cross-check: find this sample's gen_seq from the CSV and locate it in
-    # the PDB sequence
-    csv = CSV_DIR / f"{SLICE_VARIANT}_{SLICE_TEST}.csv"
-    df = pd.read_csv(csv)
-    row = df[(df["entry_id"] == "7n9v_J")
-             & (df["cdr"] == "H3")
-             & (df["sample"] == 0)]
-    if not len(row):
-        print("\nNo CSV row for 7n9v_J / H3 / sample 0 — skipping cross-check")
+    # Cross-check: find this sample's gen_seq (H3) and locate it in the PDB
+    # chain sequence. Read from whichever data source Stage B used.
+    gen_seq = None
+    try:
+        m = pd.read_parquet(MASTER_PARQUET)
+        row = m[m["pdb_filepath"].astype(str) == str(pdb_path)]
+        if len(row) and "cdr3_sequence" in row.columns:
+            cdr3 = row.iloc[0].get("cdr3_sequence")
+            if isinstance(cdr3, str) and cdr3:
+                gen_seq = cdr3
+                print(f"\nMaster-parquet cdr3_sequence for this PDB: {gen_seq!r}")
+    except Exception as e:
+        print(f"(could not fetch cdr3_sequence: {e})")
+    if gen_seq is None:
+        for d in CSV_DIR_CANDIDATES:
+            csv = d / f"{SLICE_VARIANT}_{SLICE_TEST}.csv"
+            if csv.exists():
+                df = pd.read_csv(csv)
+                row = df[(df["cdr"] == "H3") & (df["sample"] == 0)]
+                # Match by entry_id derived from the PDB filename
+                stem_parts = pdb_path.stem.split("_")  # e.g. "7n9v_J_H3_sample_0001"
+                entry_guess = "_".join(stem_parts[:2]) if len(stem_parts) >= 2 else None
+                row = row[row["entry_id"] == entry_guess]
+                if len(row):
+                    gen_seq = row.iloc[0]["gen_seq"]
+                    print(f"\nCSV gen_seq for this PDB: {gen_seq!r}")
+                    break
+    if gen_seq is None:
+        print("\nNo gen_seq available for this PDB — skipping in-chain locate.")
         return
-    gen_seq = row.iloc[0]["gen_seq"]
     print(f"\nCSV row 7n9v_J H3 sample 0: gen_seq = {gen_seq!r} (len {len(gen_seq)})")
     idx = seq_str.find(gen_seq)
     if idx >= 0:
@@ -360,8 +391,14 @@ def stage_c_pdb():
 def verdict(parquet_gen, parquet_gt, gen_seq_gen, gen_seq_gt):
     header("VERDICT")
     print(f"\nParquet's claimed seed42_jfix×oldtest×H3 model motif:  {parquet_gen}")
-    print(f"gen_seq-aggregated H3 model motif (writer's method):    {gen_seq_gen}")
+    print(f"gen_seq-aggregated H3 model motif (writer's method):    "
+          f"{gen_seq_gen if gen_seq_gen else 'N/A (Stage B had no data source)'}")
     print()
+    if gen_seq_gen is None:
+        print("INCONCLUSIVE — Stage B produced no data. Cannot adjudicate "
+              "without the gen_seq source; see Stage B output above for which "
+              "fallbacks were tried.")
+        return
     if parquet_gen.upper() == gen_seq_gen.upper():
         print("BOTH analyses produce the SAME motif → REFUTE bug claim. "
               "Brief 13's parquet correctly reflects gen_seq aggregation.")
