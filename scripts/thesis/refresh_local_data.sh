@@ -37,4 +37,25 @@ done
 mkdir -p data/wandb_exports
 rsync -avz "$SNEL:$REMOTE/data/wandb_exports/" data/wandb_exports/
 
+# ── Brief 11 (Phase B) — design-sample developability eval ────────────
+# Master parquet + intermediates (under data/eval/, not gitignored but
+# regenerable so kept out of git). The master parquet is the only one
+# the local plotter needs; pull the others if you want to recompute
+# the master locally with different thresholds.
+mkdir -p data/eval
+for f in design_samples_master.parquet \
+         design_samples_judged_all.parquet \
+         design_samples_dG_all.parquet \
+         caar_epif1.parquet \
+         per_position_modal_picks_all.parquet \
+         gt_pdb_map.json ; do
+    rsync -avz "$SNEL:$REMOTE/data/eval/$f" "data/eval/$f"
+done
+
+# Phase B figures + summary table (docs/ is fully gitignored, so this is
+# the ONLY way these reach local).
+mkdir -p docs/figures/phase_b
+rsync -avz --include='*.pdf' --include='*.png' --include='*.md' --exclude='*' \
+    "$SNEL:$REMOTE/docs/figures/phase_b/" docs/figures/phase_b/
+
 echo "Refresh complete."
