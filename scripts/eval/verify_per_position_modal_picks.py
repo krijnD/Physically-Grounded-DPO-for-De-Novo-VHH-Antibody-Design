@@ -30,9 +30,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 THESIS_ROOT = PROJECT_ROOT.parent / "master-thesis"
 PARQUET_BRIEF13 = PROJECT_ROOT / "data/eval/per_position_modal_picks_all.parquet"
 MASTER_PARQUET  = PROJECT_ROOT / "data/eval/design_samples_master.parquet"
-CSV_DIR         = THESIS_ROOT / "data/eval/per_sample_csvs"
 
-# Design PDB mirrored locally as a Brief-12 artifact:
+# Optional CSV mirror (writer's local layout). Falls back to master parquet
+# if missing — see _load_h3_seqs() below.
+CSV_DIR_CANDIDATES = [
+    THESIS_ROOT / "data/eval/per_sample_csvs",
+    PROJECT_ROOT / "data/eval/per_sample_csvs",
+]
+
+# Brief-12 fig12c artefact (optional — used by Stage C-2 if available)
 DESIGN_PDB_SAMPLE = PROJECT_ROOT / "data/eval/fig12c_inputs/7n9v_J_H3_sample_0001.pdb"
 GT_PDB_SAMPLE     = PROJECT_ROOT / "data/eval/fig12c_inputs/7n9v.pdb"
 
@@ -77,54 +83,115 @@ def stage_a():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# STAGE B — gen_seq position-by-position aggregation
+# STAGE B — H3 CDR sequence position-by-position aggregation
+# Falls back through 3 data sources (whichever is present on this machine):
+#   B-1 per-sample CSVs (writer's local layout)
+#   B-2 master parquet's cdr3_sequence column (when cdr == "H3")
+#   B-3 per-CDR eval CSVs at runs/<variant_dir>/eval_<test>_design.csv
 # ════════════════════════════════════════════════════════════════════════
+
+# Map (variant, test_set) → canonical eval CSV path for fallback B-3
+EVAL_CSV_MAP = {
+    ("seed42_jfix",       "oldtest"): "runs/vhh_ft/seed42_jfix/eval_test_design.csv",
+    ("floor_pi_theta",    "oldtest"): "runs/dpo/dpo_seqonly_filtered/eval_test_design.csv",
+    ("expanded_pi_ref",   "oldtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_oldtest_design.csv",
+    ("expanded_pi_ref",   "newtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_newtest_design.csv",
+    ("expanded_pi_theta", "oldtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_oldtest_design.csv",
+    ("expanded_pi_theta", "newtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_newtest_design.csv",
+}
+
+
+def _load_h3_seqs(variant, test_set, cdr):
+    """Return (gen_seqs_list, native_seqs_list, source_str)."""
+    # B-1 try per-sample CSV (the writer's layout)
+    for d in CSV_DIR_CANDIDATES:
+        csv = d / f"{variant}_{test_set}.csv"
+        if csv.exists():
+            df = pd.read_csv(csv)
+            df = df[df["cdr"] == cdr]
+            return (df["gen_seq"].astype(str).tolist(),
+                    df["native_seq"].astype(str).tolist(),
+                    f"CSV {csv}")
+    # B-2 master parquet's cdr3_sequence (only useful when cdr == H3)
+    m = pd.read_parquet(MASTER_PARQUET)
+    sub = m[(m["variant"] == variant)
+            & (m["test_set"] == test_set)
+            & (m["cdr"] == cdr)]
+    if cdr == "H3" and "cdr3_sequence" in sub.columns:
+        gen_seqs = sub["cdr3_sequence"].dropna().astype(str).tolist()
+        if gen_seqs:
+            return (gen_seqs, [],
+                    f"master parquet cdr3_sequence column (n={len(gen_seqs)})")
+    # B-3 per-CDR eval CSV at the campaign-canonical path
+    rel = EVAL_CSV_MAP.get((variant, test_set))
+    if rel:
+        eval_csv = PROJECT_ROOT / rel
+        if eval_csv.exists():
+            df = pd.read_csv(eval_csv)
+            df = df[df["cdr"] == cdr] if "cdr" in df.columns else df
+            return (df["gen_seq"].astype(str).tolist(),
+                    df["native_seq"].astype(str).tolist(),
+                    f"eval CSV {eval_csv}")
+    return [], [], "NO SOURCE FOUND"
+
+
 def stage_b():
-    header("STAGE B — gen_seq[k] modal pick from per-sample CSV")
-    csv = CSV_DIR / f"{SLICE_VARIANT}_{SLICE_TEST}.csv"
-    if not csv.exists():
-        sys.exit(f"FATAL: {csv} missing")
-    df = pd.read_csv(csv)
-    print(f"CSV total rows: {len(df)}; CDRs: {df['cdr'].value_counts().to_dict()}")
+    header("STAGE B — H3 CDR string modal pick (gen_seq[k] aggregation)")
+    gen_seqs, native_seqs, source = _load_h3_seqs(
+        SLICE_VARIANT, SLICE_TEST, SLICE_CDR)
+    print(f"Data source: {source}")
+    print(f"gen_seqs n={len(gen_seqs)}; native_seqs n={len(native_seqs)}")
+    if not gen_seqs:
+        print("FATAL: no H3 gen_seqs found in any data source — skipping Stage B.")
+        return None, None
 
-    sub = df[df["cdr"] == SLICE_CDR].copy()
-    print(f"\nH3 rows: {len(sub)} (expected ~{SLICE_EXPECTED_N_GEN})")
-
-    # Length distribution
-    sub["gen_len"]    = sub["gen_seq"].astype(str).str.len()
-    sub["native_len"] = sub["native_seq"].astype(str).str.len()
+    gen_lens = [len(s) for s in gen_seqs]
     print("\ngen_seq length distribution:")
-    print(sub["gen_len"].value_counts().sort_index().to_string())
-    print("\nnative_seq length distribution:")
-    print(sub["native_len"].value_counts().sort_index().to_string())
+    print(pd.Series(gen_lens).value_counts().sort_index().to_string())
+    if native_seqs:
+        nat_lens = [len(s) for s in native_seqs]
+        print("\nnative_seq length distribution:")
+        print(pd.Series(nat_lens).value_counts().sort_index().to_string())
 
-    # Use the modal length as the canonical L
-    L = int(sub["native_len"].mode().iloc[0])
-    print(f"\nCanonical CDR length L = {L} (native modal); using gen samples with len==L")
-    sub_L = sub[sub["gen_len"] == L]
-    print(f"  n samples used: {len(sub_L)}")
+    # Determine canonical L
+    if native_seqs:
+        L = int(pd.Series(nat_lens).mode().iloc[0])
+        print(f"\nCanonical CDR length L = {L} (native modal)")
+    else:
+        L = int(pd.Series(gen_lens).mode().iloc[0])
+        print(f"\nCanonical CDR length L = {L} (gen modal — no native_seqs to fix L)")
+    gen_at_L = [s for s in gen_seqs if len(s) == L]
+    nat_at_L = [s for s in native_seqs if len(s) == L] if native_seqs else []
+    print(f"  gen samples at L: {len(gen_at_L)}; native samples at L: {len(nat_at_L)}")
 
     print(f"\nPer-position modal AA on gen_seq[0..{L-1}]:")
     print(f"{'k':>3} | {'gen_modal':<10}| {'gen_top3':<35} | "
           f"{'native_modal':<13}| native_top3")
     gen_motif_parts, gt_motif_parts = [], []
     for k in range(L):
-        gen_col = [s[k] for s in sub_L["gen_seq"]]
-        native_col = [s[k] for s in sub_L["native_seq"] if len(str(s)) > k]
+        gen_col = [s[k] for s in gen_at_L]
         gc = Counter(gen_col).most_common(3)
-        nc = Counter(native_col).most_common(3)
         gen_modal_aa, gen_modal_n = gc[0]
-        gt_modal_aa,  gt_modal_n  = nc[0]
         gen_motif_parts.append(gen_modal_aa)
-        gt_motif_parts.append(gt_modal_aa)
         gen_top3_s = ", ".join(f"{a}={n/len(gen_col):.2f}" for a, n in gc)
-        nat_top3_s = ", ".join(f"{a}={n/len(native_col):.2f}" for a, n in nc)
-        print(f"{k:>3} | {gen_modal_aa} {gen_modal_n/len(gen_col):>5.2%}  | "
-              f"{gen_top3_s:<35} | "
-              f"{gt_modal_aa} {gt_modal_n/len(native_col):>5.2%}  | {nat_top3_s}")
+
+        if nat_at_L:
+            native_col = [s[k] for s in nat_at_L]
+            nc = Counter(native_col).most_common(3)
+            gt_modal_aa, gt_modal_n = nc[0]
+            gt_motif_parts.append(gt_modal_aa)
+            nat_top3_s = ", ".join(f"{a}={n/len(native_col):.2f}" for a, n in nc)
+            print(f"{k:>3} | {gen_modal_aa} {gen_modal_n/len(gen_col):>5.2%}  | "
+                  f"{gen_top3_s:<35} | "
+                  f"{gt_modal_aa} {gt_modal_n/len(native_col):>5.2%}  | "
+                  f"{nat_top3_s}")
+        else:
+            gt_motif_parts.append("?")
+            print(f"{k:>3} | {gen_modal_aa} {gen_modal_n/len(gen_col):>5.2%}  | "
+                  f"{gen_top3_s:<35} | (no native_seqs) | -")
     gen_motif = "".join(gen_motif_parts)
-    gt_motif = "".join(gt_motif_parts)
-    print(f"\ngen_seq H3 modal motif (positions 0→{L-1}): {gen_motif}")
+    gt_motif  = "".join(gt_motif_parts)
+    print(f"\ngen_seq    H3 modal motif (positions 0→{L-1}): {gen_motif}")
     print(f"native_seq H3 modal motif (positions 0→{L-1}): {gt_motif}")
     return gen_motif, gt_motif
 
@@ -175,13 +242,35 @@ def stage_c_substring():
 # ════════════════════════════════════════════════════════════════════════
 # STAGE C-2 — inspect one design PDB residue by residue
 # ════════════════════════════════════════════════════════════════════════
+def _find_design_pdb_for_slice():
+    """Return a Path to one design PDB for the slice's first sample, or None."""
+    if DESIGN_PDB_SAMPLE.exists():
+        return DESIGN_PDB_SAMPLE
+    # Fallback: use master parquet's pdb_filepath to find an H3 sample
+    m = pd.read_parquet(MASTER_PARQUET)
+    sub = m[(m["variant"] == SLICE_VARIANT)
+            & (m["test_set"] == SLICE_TEST)
+            & (m["cdr"] == SLICE_CDR)
+            & (m["sample"] == 0)]
+    if not len(sub):
+        return None
+    for path in sub["pdb_filepath"].dropna().astype(str):
+        p = Path(path)
+        if p.exists():
+            return p
+    return None
+
+
 def stage_c_pdb():
-    header("STAGE C-2 — design PDB residue-by-residue (7n9v_J_H3_sample_0001)")
-    if not DESIGN_PDB_SAMPLE.exists():
-        print(f"SKIP: {DESIGN_PDB_SAMPLE} missing (need Brief 12 fig12c_inputs)")
+    header("STAGE C-2 — design PDB residue-by-residue")
+    pdb_path = _find_design_pdb_for_slice()
+    if pdb_path is None:
+        print(f"SKIP: no design PDB available for slice "
+              f"({SLICE_VARIANT}/{SLICE_TEST}/{SLICE_CDR}).")
         return
+    print(f"Design PDB: {pdb_path}")
     parser = PDBParser(QUIET=True)
-    s = parser.get_structure("design", DESIGN_PDB_SAMPLE)
+    s = parser.get_structure("design", pdb_path)
     chains = list(s.get_chains())
     print(f"Chains: {[(c.id, sum(1 for r in c.get_residues() if r.id[0]==' ')) for c in chains]}")
 
