@@ -55,20 +55,37 @@ AA3 = {"ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
 CDR_WINDOWS = {"H1": (26, 32), "H2": (52, 56), "H3": (95, 102)}
 
 
-def _classify_chains(structure):
+def _classify_chains(structure, vhh_chain_hint=None):
     """Return (vhh_chain_id, list_of_antigen_chain_ids).
 
-    VHH = single polymer chain of length 100-160;
-    antigen = other polymer chains (non-empty).
+    Resolution order for VHH:
+      1. If `vhh_chain_hint` is non-None and that chain is present in the
+         structure with ≥ 1 polymer residue, use it (authoritative — comes
+         from entry_id, e.g. "8acf_K" → "K").
+      2. Otherwise fall back to length-classify: first polymer chain of
+         length 100-160.
+
+    Antigen = every other polymer chain with non-empty residues. The
+    pipeline's curation rejects multi-VHH / VHH-Fab complexes, so
+    "everything except the VHH" is well-defined.
     """
-    vhh, antigens = None, []
+    chain_residue_counts = {}
     for chain in structure.get_chains():
         residues = [r for r in chain.get_residues() if r.id[0] == " "]
-        n = len(residues)
-        if 100 <= n <= 160 and vhh is None:
-            vhh = chain.id
-        elif n > 0:
-            antigens.append(chain.id)
+        chain_residue_counts[chain.id] = len(residues)
+
+    vhh = None
+    if (vhh_chain_hint is not None
+            and chain_residue_counts.get(vhh_chain_hint, 0) > 0):
+        vhh = vhh_chain_hint
+    if vhh is None:
+        for cid, n in chain_residue_counts.items():
+            if 100 <= n <= 160:
+                vhh = cid
+                break
+
+    antigens = [cid for cid, n in chain_residue_counts.items()
+                if n > 0 and cid != vhh]
     return vhh, antigens
 
 
@@ -177,7 +194,7 @@ def _design_epitope_set(dsg_struct, vhh_chain_id, ag_chain_ids, cdr):
     return out
 
 
-def _compute_metrics(gt_pdb, design_pdb, cdr):
+def _compute_metrics(gt_pdb, design_pdb, cdr, vhh_chain_hint=None):
     parser = PDBParser(QUIET=True)
     try:
         gt_struct = parser.get_structure("gt", gt_pdb)
@@ -185,8 +202,8 @@ def _compute_metrics(gt_pdb, design_pdb, cdr):
     except Exception as e:
         return {"error": f"parse_fail:{str(e)[:80]}"}
 
-    gt_vhh, gt_ag = _classify_chains(gt_struct)
-    dsg_vhh, dsg_ag = _classify_chains(dsg_struct)
+    gt_vhh, gt_ag = _classify_chains(gt_struct, vhh_chain_hint)
+    dsg_vhh, dsg_ag = _classify_chains(dsg_struct, vhh_chain_hint)
     if not gt_vhh or not dsg_vhh:
         return {"error": "vhh_chain_missing"}
     if not gt_ag or not dsg_ag:
@@ -232,6 +249,10 @@ def _compute_metrics(gt_pdb, design_pdb, cdr):
         "gt_epitope_n": len(gt_epi_set),
         "design_epitope_n": len(dsg_epi_set),
         "overlap_n": len(overlap),
+        "gt_vhh_chain": gt_vhh,
+        "design_vhh_chain": dsg_vhh,
+        "gt_ag_chains": ",".join(sorted(gt_ag)),
+        "design_ag_chains": ",".join(sorted(dsg_ag)),
         "error": None,
     }
 
@@ -276,7 +297,12 @@ def main():
                          "error": "gt_pdb_not_in_map"})
             continue
 
-        metrics = _compute_metrics(gt_pdb, pdb, cdr)
+        # entry_id is "{pdb_code}_{Hchain}"; everything after the last
+        # underscore is the authoritative VHH chain id on the GT side.
+        vhh_chain_hint = entry.rsplit("_", 1)[-1] if "_" in entry else None
+
+        metrics = _compute_metrics(gt_pdb, pdb, cdr,
+                                   vhh_chain_hint=vhh_chain_hint)
         rows.append({"pdb_path": pdb, "variant": variant, "test_set": test_set,
                      "entry_id": entry, "cdr": cdr, "sample": sample, **metrics})
         if (i + 1) % 50 == 0:
