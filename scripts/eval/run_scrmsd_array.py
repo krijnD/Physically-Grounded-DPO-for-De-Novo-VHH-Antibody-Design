@@ -32,8 +32,12 @@ Path convention (must match Brief 11's eval-PDB tree):
 import argparse
 import glob
 import os
+import sys
 import time
 from pathlib import Path
+
+# Make sibling modules (cdr_slicing) importable when invoked from anywhere.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
@@ -81,7 +85,15 @@ def get_chain_residues(pdb_path, chain_id):
 
 
 def derive_cdr_indices_from_generated(gen_residues):
-    """Map CDR_WINDOWS (sequential resseq on generated PDB) → chain-order indices."""
+    """LEGACY (v1) — map CDR_WINDOWS resseq → chain-order indices.
+
+    Kept as a fallback. Brief 15 Track 1: the resseq window only matches the
+    H3 CDR on a small minority of design PDBs (those with sequential
+    numbering AND H3 happens to span resseq 95-102). For most design PDBs,
+    this lookup either slices FR3 framework (judged-chunk IMGT PDBs) or
+    grabs a mis-aligned subset of H3 (runs/ PDBs with offset resseqs).
+    Use derive_cdr_indices_anarci() unless ANARCI is unavailable.
+    """
     cdr_idx = {"H1": [], "H2": [], "H3": []}
     for i, r in enumerate(gen_residues):
         resseq = r.id[1]
@@ -89,6 +101,36 @@ def derive_cdr_indices_from_generated(gen_residues):
             if lo <= resseq <= hi:
                 cdr_idx[cdr].append(i)
                 break
+    return cdr_idx
+
+
+def derive_cdr_indices_anarci(gen_pdb_path, gen_chain_id, gen_residues_trimmed):
+    """TRACK1 — map ANARCI-Chothia CDR residues to chain-order indices.
+
+    Runs ANARCI on the gen PDB's heavy chain, gets H1/H2/H3 residues by
+    Chothia numbering, and maps them to indices in `gen_residues_trimmed`
+    (which is the gen-residue list after V-domain trim in compute_scrmsd).
+
+    Returns {"H1": [chain_idx, ...], "H2": [...], "H3": [...]} or None if
+    ANARCI + Cys-anchor fallback both fail. Indices reference positions in
+    gen_residues_trimmed (NOT the full chain).
+    """
+    from cdr_slicing import slice_cdrs
+    cdrs = slice_cdrs(gen_pdb_path, vhh_chain_hint=gen_chain_id)
+    if cdrs is None:
+        return None
+    # Build {residue.id → cdr_name} from the freshly-parsed CDR residues.
+    # Bio.PDB residue identity is the (hetflag, resseq, icode) tuple, which
+    # is stable across parses of the same PDB.
+    res_to_cdr = {}
+    for cdr_name in ("H1", "H2", "H3"):
+        for r in cdrs[cdr_name]:
+            res_to_cdr[r.id] = cdr_name
+    cdr_idx = {"H1": [], "H2": [], "H3": []}
+    for i, r in enumerate(gen_residues_trimmed):
+        cdr_name = res_to_cdr.get(r.id)
+        if cdr_name:
+            cdr_idx[cdr_name].append(i)
     return cdr_idx
 
 
@@ -141,6 +183,7 @@ def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id,
         "fw_atoms": 0,
         "H1_atoms": 0, "H2_atoms": 0, "H3_atoms": 0,
         "scrmsd_H1": np.nan, "scrmsd_H2": np.nan, "scrmsd_H3": np.nan,
+        "slicing_method": "unknown",
         "error": None,
     }
 
@@ -167,7 +210,20 @@ def compute_scrmsd(generated_pdb, predicted_pdb, gen_chain_id,
     )
     out["seq_identity_pct"] = round(100 * seq_match / n_gen, 1)
 
-    cdr_idx = derive_cdr_indices_from_generated(gen_res)
+    # TRACK1 FIX (Brief 15): use ANARCI-Chothia to derive CDR indices
+    # instead of the buggy CDR_WINDOWS resseq lookup. The resseq window
+    # only matches H3 reliably for sequentially-numbered VHHs without
+    # insertion codes; for design PDBs with offset numbering or insertion
+    # codes (common in long-H3 entries like 8elq_B), CDR_WINDOWS slices
+    # FR3 framework or a mis-aligned subset of H3.
+    cdr_idx = derive_cdr_indices_anarci(
+        generated_pdb, gen_chain_id, gen_res)
+    if cdr_idx is None:
+        # ANARCI + Cys-anchor fallback both failed — use legacy resseq slice
+        cdr_idx = derive_cdr_indices_from_generated(gen_res)
+        out["slicing_method"] = "legacy_resseq_fallback"
+    else:
+        out["slicing_method"] = "anarci_chothia_or_cys_anchor"
     cdr_set = set().union(*cdr_idx.values())
 
     fw_indices = [
