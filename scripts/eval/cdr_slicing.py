@@ -43,18 +43,16 @@ The result residue lists are in chain order; AA1 lookup is the caller's job.
 
 Implementation notes
 --------------------
-- Uses Anarcii v2.x (`pip install anarcii`), the default IMGT-numbering output
-  of which is converted to Chothia via `.to_scheme("chothia")` before the
-  CDR window is applied. The Anarcii v2 schema is:
-    out[name] = {
-      'numbering':   [((pos, icode), aa), ...],   # list of tuples
-      'chain_type':  'H'|'L'|'A'|'B'|...,
-      'score':       float,
-      'query_start': int,    # 0-indexed seq position of V-domain start
-      'query_end':   int,    # 0-indexed seq position of V-domain end (inclusive)
-      'error':       None|str,
-      'scheme':      'imgt'|'chothia'|...,
-    }
+- Uses legacy ANARCI (`pip install anarci`, package import `anarci`) via
+  `run_anarci(seq_list, scheme="chothia", allow={"H"})`. Returns a 4-tuple
+  `(input_seqs, numbering, alignment_details, hit_tables)` where
+  `numbering[0][0]` is the first VHH domain as `(numbering_tuples, query_start,
+  query_end)` with numbering_tuples = list of `((pos, icode), aa)`.
+
+  Anarcii v2.x's `Anarcii.to_scheme()` raises if called before `number()`
+  and its mutate-after-number behavior is finicky; the legacy ANARCI path
+  is more reliable and accepts `scheme=` directly.
+
 - `query_start` / `query_end` give the seq indices of the V-domain envelope.
   Residues outside the envelope (e.g., constant-region overhang) are excluded
   from CDR assignment.
@@ -79,20 +77,6 @@ AA3 = {"ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
 # Chothia CDR position windows (canonical; matches GT-side CDR_WINDOWS used
 # by run_caar_epif1_array.py + run_scrmsd_array.py)
 CHOTHIA_CDR_BOUNDS = {"H1": (26, 32), "H2": (52, 56), "H3": (95, 102)}
-
-# Lazy global so we instantiate Anarcii once per process
-_ANARCII_INSTANCE = None
-
-
-def _get_anarcii():
-    """Lazy-init a process-local Anarcii instance (cpu=True for login-node safety)."""
-    global _ANARCII_INSTANCE
-    if _ANARCII_INSTANCE is None:
-        from anarcii import Anarcii
-        _ANARCII_INSTANCE = Anarcii(cpu=True, verbose=False)
-        # Default scheme is IMGT; we want Chothia for CDR-bound matching.
-        _ANARCII_INSTANCE.to_scheme("chothia")
-    return _ANARCII_INSTANCE
 
 
 def _extract_heavy_chain(structure, vhh_chain_hint: Optional[str] = None):
@@ -130,11 +114,11 @@ def _extract_heavy_chain(structure, vhh_chain_hint: Optional[str] = None):
 def slice_cdrs_anarci(pdb_path: str,
                       vhh_chain_hint: Optional[str] = None,
                       verbose: bool = False) -> Optional[dict]:
-    """Slice CDR-H1/H2/H3 residues using ANARCII-Chothia numbering.
+    """Slice CDR-H1/H2/H3 residues using legacy ANARCI Chothia numbering.
 
     Returns {"H1": [Residue, ...], "H2": [...], "H3": [...]} (lists in chain
     order) on success, None on any failure (parse error, no heavy chain,
-    ANARCII error, etc.).
+    ANARCI error, etc.).
     """
     parser = PDBParser(QUIET=True)
     try:
@@ -150,29 +134,35 @@ def slice_cdrs_anarci(pdb_path: str,
         return None
 
     try:
-        ann = _get_anarcii()
-        out = ann.number({"query": seq})
+        from anarci import run_anarci
+        result = run_anarci([("query", seq)], scheme="chothia",
+                            allow={"H"}, ncpu=1)
     except Exception as e:
         if verbose:
-            print(f"  anarcii_run_fail: {e}", file=sys.stderr)
+            print(f"  anarci_run_fail: {e}", file=sys.stderr)
+        return None
+    if not result or len(result) < 2:
+        return None
+    numbering_list = result[1]
+    if not numbering_list or not numbering_list[0]:
+        if verbose:
+            print(f"  anarci_no_domain (chain may not be VHH)", file=sys.stderr)
         return None
 
-    rec = out.get("query")
-    if not isinstance(rec, dict) or rec.get("error") is not None:
+    # Take the first (and usually only) heavy domain. ANARCI returns it as
+    # (numbering_tuples, query_start, query_end) where query_start/end are
+    # 0-indexed seq positions of the V-domain envelope.
+    domain = numbering_list[0][0]
+    if not isinstance(domain, tuple) or len(domain) != 3:
         if verbose:
-            print(f"  anarcii_result_err: {rec}", file=sys.stderr)
+            print(f"  anarci_unexpected_domain_shape: {type(domain)}",
+                  file=sys.stderr)
         return None
-    numbering = rec.get("numbering")
-    if not numbering:
-        if verbose:
-            print("  anarcii_empty_numbering", file=sys.stderr)
-        return None
-    query_start = rec.get("query_start", 0)
-    query_end = rec.get("query_end", len(seq) - 1)
+    numbering, query_start, query_end = domain
 
     # Build map: seq_index → chothia_pos. seq_index = position in the input
-    # `seq` string (which is also chain-order index in `residues`). ANARCII
-    # numbering iterates over the V-domain envelope starting at query_start.
+    # `seq` string (which is also chain-order index in `residues`). ANARCI
+    # numbering starts at query_start of the V-domain envelope.
     # Gap entries (aa == "-") in the canonical scheme don't consume a seq
     # position; skip them.
     seq_to_chothia = {}
