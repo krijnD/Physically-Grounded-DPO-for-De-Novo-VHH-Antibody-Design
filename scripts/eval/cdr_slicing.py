@@ -275,3 +275,79 @@ def cdrs_as_aa1(cdrs: dict) -> dict:
         cdr: "".join(AA3.get(r.get_resname(), "X") for r in cdrs[cdr])
         for cdr in ("H1", "H2", "H3")
     }
+
+
+def slice_cdrs_with_chothia(pdb_path: str,
+                            vhh_chain_hint: Optional[str] = None,
+                            verbose: bool = False) -> Optional[dict]:
+    """Like slice_cdrs but returns {cdr: [(chothia_pos, Residue), ...]}.
+
+    Each tuple gives the Chothia position number that ANARCI assigned to that
+    residue. This lets callers (e.g., the CAAR dispatcher) align residues
+    across GT and design PDBs by Chothia position number — the ChimeraBench
+    convention — rather than by raw PDB resseq.
+
+    Returns None if ANARCI fails (no Cys-anchor fallback, since the
+    Cys-anchor recipe doesn't assign Chothia positions).
+    """
+    parser = PDBParser(QUIET=True)
+    try:
+        struct = parser.get_structure("x", pdb_path)
+    except Exception as e:
+        if verbose:
+            print(f"  parse_fail: {e}", file=sys.stderr)
+        return None
+    chain, residues, seq = _extract_heavy_chain(struct, vhh_chain_hint)
+    if chain is None or len(seq) < 100:
+        return None
+
+    try:
+        from anarci import run_anarci
+        result = run_anarci([("query", seq)], scheme="chothia",
+                            allow={"H"}, ncpu=1)
+    except Exception as e:
+        if verbose:
+            print(f"  anarci_run_fail: {e}", file=sys.stderr)
+        return None
+    if not result or len(result) < 2:
+        return None
+    numbering_list = result[1]
+    if not numbering_list or not numbering_list[0]:
+        return None
+    domain = numbering_list[0][0]
+    if not isinstance(domain, tuple) or len(domain) != 3:
+        return None
+    numbering, query_start, query_end = domain
+
+    seq_to_chothia = {}
+    seq_idx = query_start
+    for (pos_num, icode), aa in numbering:
+        if aa == "-":
+            continue
+        if seq_idx > query_end:
+            break
+        if seq_idx < len(seq) and seq[seq_idx] == aa:
+            seq_to_chothia[seq_idx] = pos_num
+        seq_idx += 1
+
+    cdrs = {"H1": [], "H2": [], "H3": []}
+    for i, res in enumerate(residues):
+        cpos = seq_to_chothia.get(i)
+        if cpos is None:
+            continue
+        for cdr, (lo, hi) in CHOTHIA_CDR_BOUNDS.items():
+            if lo <= cpos <= hi:
+                cdrs[cdr].append((cpos, res))
+                break
+    return cdrs
+
+
+def cdrs_chothia_dict(cdrs_with_chothia: dict) -> dict:
+    """Convenience: {cdr: [(pos, Residue), ...]} → {cdr: {pos: aa1}}."""
+    if cdrs_with_chothia is None:
+        return None
+    return {
+        cdr: {pos: AA3.get(r.get_resname(), "X")
+              for pos, r in cdrs_with_chothia[cdr]}
+        for cdr in ("H1", "H2", "H3")
+    }

@@ -34,7 +34,11 @@ Usage:
 import argparse
 import glob
 import json
+import sys
 from pathlib import Path
+
+# Make sibling modules (cdr_slicing) importable when invoked from anywhere.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
@@ -167,12 +171,29 @@ def _design_cdr_seq_dict(dsg_struct, vhh_chain_id, cdr):
 
 
 def _design_epitope_set(dsg_struct, vhh_chain_id, ag_chain_ids, cdr):
-    """8.0 A Ca-Ca: predicted CDR Ca atoms vs antigen Ca atoms.
+    """LEGACY (v1) — 8.0 A Ca-Ca on raw resseq-window-sliced CDR residues.
+
+    Kept for fallback only when ANARCI slicing fails. The Track 1 path is
+    _design_epitope_set_from_residues, which takes pre-sliced residues from
+    cdr_slicing.slice_cdrs_with_chothia.
 
     Returns set of (ag_chain, resseq) tuples.
-    (ChimeraBench compute_epitope_mask convention — metrics.py L152-171.)
     """
     cdr_residues = _cdr_residues(dsg_struct, vhh_chain_id, cdr)
+    return _design_epitope_set_from_residues(cdr_residues, dsg_struct, ag_chain_ids)
+
+
+def _design_epitope_set_from_residues(cdr_residues, dsg_struct, ag_chain_ids):
+    """TRACK1 — 8.0 A Ca-Ca on pre-sliced CDR residues.
+
+    Used by the patched dispatcher in combination with
+    cdr_slicing.slice_cdrs_with_chothia for design-side CDR slicing that
+    works regardless of the design PDB's numbering convention.
+
+    Returns set of (ag_chain, resseq) tuples (ag_chain + ag_resseq is the
+    chain-and-position fingerprint of an antigen residue; antigen
+    numbering is preserved end-to-end by DiffAb so this is well-defined).
+    """
     ag_residues_pairs = _ag_residues(dsg_struct, ag_chain_ids)
     if not cdr_residues or not ag_residues_pairs:
         return set()
@@ -212,10 +233,35 @@ def _compute_metrics(gt_pdb, design_pdb, cdr, vhh_chain_hint=None):
     paratope_resseqs, gt_epi_set, gt_cdr_aas = _gt_contacts_at_cdr(
         gt_struct, gt_vhh, gt_ag, cdr
     )
-    dsg_cdr_aas = _design_cdr_seq_dict(dsg_struct, dsg_vhh, cdr)
-    dsg_epi_set = _design_epitope_set(dsg_struct, dsg_vhh, dsg_ag, cdr)
 
-    # CAAR — restricted to GT paratope positions; align by resseq
+    # TRACK1 FIX (Brief 15):
+    # On the GT side, CDR_WINDOWS resseq lookup is correct because GT PDBs
+    # use Chothia author-numbering — GT resseq == Chothia position. On the
+    # DESIGN side, the resseq lookup is unreliable (judged_chunks PDBs use
+    # IMGT renumbering where resseq 95-102 = FR3 framework; runs/ PDBs use
+    # heterogeneous numbering depending on input PDB resseq offsets).
+    # Switch to ANARCI Chothia numbering on the design side and align by
+    # Chothia position. Falls back to legacy resseq slicing if ANARCI fails.
+    from cdr_slicing import slice_cdrs_with_chothia, cdrs_chothia_dict
+    dsg_cdrs_w_pos = slice_cdrs_with_chothia(
+        design_pdb, vhh_chain_hint=dsg_vhh)
+    if dsg_cdrs_w_pos is None:
+        # Legacy fallback — resseq-window slicing
+        dsg_cdr_aas = _design_cdr_seq_dict(dsg_struct, dsg_vhh, cdr)
+        dsg_cdr_residues_anarci = _cdr_residues(dsg_struct, dsg_vhh, cdr)
+        slicing_method = "legacy_resseq_fallback"
+    else:
+        # ANARCI Chothia slicing — design CDR aa dict keyed by Chothia pos
+        dsg_cdr_aas = cdrs_chothia_dict(dsg_cdrs_w_pos)[cdr]
+        dsg_cdr_residues_anarci = [r for (_pos, r) in dsg_cdrs_w_pos[cdr]]
+        slicing_method = "anarci_chothia"
+
+    dsg_epi_set = _design_epitope_set_from_residues(
+        dsg_cdr_residues_anarci, dsg_struct, dsg_ag)
+
+    # CAAR — GT paratope_resseqs are Chothia positions (GT uses Chothia
+    # author numbering); design dict is keyed by Chothia position via
+    # ANARCI. So the position-by-position comparison is well-defined.
     if not paratope_resseqs:
         caar_val, caar_n = float("nan"), 0
     else:
@@ -226,8 +272,8 @@ def _compute_metrics(gt_pdb, design_pdb, cdr, vhh_chain_hint=None):
         caar_val = 100.0 * matched / len(paratope_resseqs)
         caar_n = len(paratope_resseqs)
 
-    # EpiF1 — compare by (chain, resseq); DiffAb preserves antigen
-    # chain IDs and resseqs as conditioning, so this is well-aligned.
+    # EpiF1 — compare by (ag_chain, ag_resseq) on the antigen side (preserved
+    # end-to-end by DiffAb). VHH-side is sourced from ANARCI-sliced CDRs.
     overlap = gt_epi_set & dsg_epi_set
     if not gt_epi_set and not dsg_epi_set:
         precision, recall, f1 = float("nan"), float("nan"), float("nan")
@@ -253,6 +299,7 @@ def _compute_metrics(gt_pdb, design_pdb, cdr, vhh_chain_hint=None):
         "design_vhh_chain": dsg_vhh,
         "gt_ag_chains": ",".join(sorted(gt_ag)),
         "design_ag_chains": ",".join(sorted(dsg_ag)),
+        "design_slicing_method": slicing_method,
         "error": None,
     }
 
