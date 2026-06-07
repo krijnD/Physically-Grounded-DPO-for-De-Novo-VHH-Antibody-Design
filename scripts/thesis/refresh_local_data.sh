@@ -27,7 +27,9 @@ for d in \
     runs/dpo/dpo_seqonly_filtered \
     runs/dpo/dpo_seqonly_filtered_expanded \
     runs/vhh_ft/seed42_jfix_expanded \
-    runs/vhh_ft/seed42_jfix ; do
+    runs/vhh_ft/seed42_jfix \
+    runs/dpo/floor_dpo_beta0005 \
+    runs/dpo/floor_dpo_beta05 ; do
     mkdir -p "$d"
     rsync -avz --include='eval*' --include='*.json' --include='*.csv' --exclude='*' \
         "$SNEL:$REMOTE/$d/" "$d/" 2>&1 | tail -3
@@ -48,7 +50,12 @@ for f in design_samples_master.parquet \
          design_samples_dG_all.parquet \
          caar_epif1.parquet \
          per_position_modal_picks_all.parquet \
-         gt_pdb_map.json ; do
+         gt_pdb_map.json \
+         beta_sweep_comparison.parquet \
+         caar_epif1_beta0005.parquet \
+         caar_epif1_beta05.parquet \
+         scrmsd_beta0005.parquet \
+         scrmsd_beta05.parquet ; do
     rsync -avz "$SNEL:$REMOTE/data/eval/$f" "data/eval/$f"
 done
 
