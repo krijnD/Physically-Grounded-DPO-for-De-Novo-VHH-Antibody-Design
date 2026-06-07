@@ -150,8 +150,13 @@ def main():
     print(f"Wrote {len(df)} rows to {OUTPUT_PATH}")
     print()
 
+    # Default 2-decimal format rounds 0.005 → 0.01 on stdout; show beta at 3 decimals
+    # so 0.005 / 0.05 / 0.5 are unambiguous. Underlying parquet is unaffected.
     pd.options.display.float_format = "{:.2f}".format
-    print(df.to_string(index=False))
+    print(df.to_string(
+        index=False,
+        formatters={"beta": lambda x: "  NaN" if pd.isna(x) else f"{x:.3f}"},
+    ))
 
 
 if __name__ == "__main__":
