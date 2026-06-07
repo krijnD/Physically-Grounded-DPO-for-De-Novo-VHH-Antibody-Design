@@ -52,12 +52,15 @@ import pandas as pd
 # Briefs 06 / 07b — also matches the EVAL_CSV_MAP used by
 # scripts/eval/verify_per_position_modal_picks.py.
 EVAL_CSV_MAP = {
-    ("seed42_jfix",       "oldtest"): "runs/vhh_ft/seed42_jfix/eval_test_design.csv",
-    ("floor_pi_theta",    "oldtest"): "runs/dpo/dpo_seqonly_filtered/eval_test_design.csv",
-    ("expanded_pi_ref",   "oldtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_oldtest_design.csv",
-    ("expanded_pi_ref",   "newtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_newtest_design.csv",
-    ("expanded_pi_theta", "oldtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_oldtest_design.csv",
-    ("expanded_pi_theta", "newtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_newtest_design.csv",
+    ("seed42_jfix",         "oldtest"): "runs/vhh_ft/seed42_jfix/eval_test_design.csv",
+    ("floor_pi_theta",      "oldtest"): "runs/dpo/dpo_seqonly_filtered/eval_test_design.csv",
+    ("expanded_pi_ref",     "oldtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_oldtest_design.csv",
+    ("expanded_pi_ref",     "newtest"): "runs/vhh_ft/seed42_jfix_expanded/eval_newtest_design.csv",
+    ("expanded_pi_theta",   "oldtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_oldtest_design.csv",
+    ("expanded_pi_theta",   "newtest"): "runs/dpo/dpo_seqonly_filtered_expanded/eval_newtest_design.csv",
+    # Brief 16 β-sweep — corrective ablation; OLD test only.
+    ("floor_pi_theta_b0005","oldtest"): "runs/dpo/floor_dpo_beta0005/eval_test_design.csv",
+    ("floor_pi_theta_b05",  "oldtest"): "runs/dpo/floor_dpo_beta05/eval_test_design.csv",
 }
 
 EXPECTED_COLS = {"cdr", "entry_id", "native_seq", "gen_seq", "sample"}
