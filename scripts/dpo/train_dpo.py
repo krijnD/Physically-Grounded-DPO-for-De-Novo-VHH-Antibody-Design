@@ -458,8 +458,68 @@ def main() -> int:
     eval_mode_theta = bool(config.dpo.get("eval_mode_theta", True))
     topk = TopKCheckpointer(ckpt_dir, k=int(config.train.get("save_top_k", 3)))
 
-    def _run_dpo_step(batch_dict: dict, *, training: bool) -> dict:
-        """Single DPO loss evaluation. Returns logging-friendly dict."""
+    # Per-channel gradient-norm imbalance threshold. Brief 17 §11
+    # (orchestrator note 2): if any structural channel's grad norm
+    # exceeds STRUCT_VS_SEQ_GRAD_WARN × the seq channel's norm at an
+    # audit iter, that's a destabilization signal — log a WARN line so
+    # the operator can decide whether to kill the run. We don't auto-
+    # terminate; the existing NaN-loss guard at line ~528 covers true
+    # failure. Threshold 10× per the orchestrator spec.
+    STRUCT_VS_SEQ_GRAD_WARN = 10.0
+    PER_CHANNEL_AUDIT_KEYS = ("rot", "pos", "seq")
+
+    def _audit_per_channel_grad_norms(
+        pair_losses_,
+        mask_,
+    ) -> dict[str, float]:
+        """Three separate backward passes (one per channel) to measure
+        the gradient each channel would contribute at unit weight.
+
+        Restores ``model_theta``'s grads to zero before returning, so
+        the caller can do a fresh ``loss.backward()`` on the main
+        composite without contamination. Uses ``retain_graph=True``
+        on each backward so the next channel and the main backward
+        can still traverse the same forward graph.
+
+        Returns ``{"rot": …, "pos": …, "seq": …}`` (Python floats).
+        """
+        norms: dict[str, float] = {}
+        for ch in PER_CHANNEL_AUDIT_KEYS:
+            model_theta.zero_grad(set_to_none=True)
+            ch_weights = {k: 0.0 for k in PER_CHANNEL_AUDIT_KEYS}
+            ch_weights[ch] = 1.0
+            ch_loss, _ = abdpo_loss(
+                pair_losses_,
+                mask=mask_,
+                loss_weights=ch_weights,
+                beta_dpo=beta_dpo,
+                num_timesteps=T,
+                aggregation=aggregation,
+            )
+            ch_loss.backward(retain_graph=True)
+            sq = 0.0
+            for p in model_theta.parameters():
+                if p.grad is not None:
+                    sq += float((p.grad.detach() ** 2).sum().item())
+            norms[ch] = float(sq ** 0.5)
+        model_theta.zero_grad(set_to_none=True)
+        return norms
+
+    def _run_dpo_step(
+        batch_dict: dict,
+        *,
+        training: bool,
+        audit_per_channel_grads: bool = False,
+    ) -> dict:
+        """Single DPO loss evaluation. Returns logging-friendly dict.
+
+        When ``audit_per_channel_grads`` is True (training only), runs
+        three extra single-channel backward passes BEFORE the caller's
+        main backward, captures their grad norms, and emits them under
+        ``grad_norm_{rot,pos,seq}`` keys. Grads are zeroed before the
+        function returns so the caller's main ``loss.backward()`` runs
+        on a clean grad state. See ``_audit_per_channel_grad_norms``.
+        """
         batch_w = recursive_to(batch_dict["winner"], args.device)
         batch_l = recursive_to(batch_dict["loser"], args.device)
 
@@ -506,6 +566,39 @@ def main() -> int:
 
         diag_out = {k: float(v.item()) for k, v in diag.items()}
         diag_out["loss"] = float(loss.item())
+
+        if audit_per_channel_grads and training:
+            # Audit BEFORE the caller's main backward so the autograd
+            # graph rooted at pair_losses is still alive (we pass
+            # retain_graph=True internally to keep it that way).
+            per_channel = _audit_per_channel_grad_norms(
+                pair_losses, batch_w["generate_flag"],
+            )
+            for ch, n in per_channel.items():
+                diag_out[f"grad_norm_{ch}"] = n
+            seq_n = per_channel["seq"]
+            if seq_n > 1e-9:
+                ratios = {
+                    f"grad_ratio_{ch}_over_seq": per_channel[ch] / seq_n
+                    for ch in PER_CHANNEL_AUDIT_KEYS
+                }
+                for k, v in ratios.items():
+                    diag_out[k] = float(v)
+                worst_struct = max(
+                    ratios["grad_ratio_rot_over_seq"],
+                    ratios["grad_ratio_pos_over_seq"],
+                )
+                if worst_struct > STRUCT_VS_SEQ_GRAD_WARN:
+                    logger.warning(
+                        "GRAD-IMBALANCE: structural channel exceeds %.1f× seq "
+                        "(rot=%.3f pos=%.3f seq=%.3f → max ratio %.2f). Brief 17 "
+                        "§11 destabilization warning — consider killing run if "
+                        "this persists across multiple audits.",
+                        STRUCT_VS_SEQ_GRAD_WARN,
+                        per_channel["rot"], per_channel["pos"], seq_n,
+                        worst_struct,
+                    )
+
         return loss, diag_out
 
     def _step(it: int) -> dict:
@@ -522,7 +615,14 @@ def main() -> int:
             model_theta.train()
         batch_dict = next(train_iterator)
 
-        loss, diag = _run_dpo_step(batch_dict, training=True)
+        # Brief 17 §11: audit per-channel grad norms on the same
+        # cadence as validation (every val_freq iters). Catches the
+        # rot/pos destabilization risk early without paying the audit
+        # cost on every iter.
+        audit_grads = (it % val_freq == 0) or (it == it_first)
+        loss, diag = _run_dpo_step(
+            batch_dict, training=True, audit_per_channel_grads=audit_grads,
+        )
 
         if not torch.isfinite(loss):
             logger.error("Non-finite DPO loss at iter %d: %s", it, loss.item())
@@ -540,7 +640,7 @@ def main() -> int:
         optimizer.zero_grad()
         ema_theta.update_parameters(model_theta)
 
-        return {
+        out = {
             "iter": it,
             "loss": diag["loss"],
             "margin": diag["margin_mean"],
@@ -554,6 +654,14 @@ def main() -> int:
             "lr": optimizer.param_groups[0]["lr"],
             "ms": current_milli_time() - t0,
         }
+        # Forward the per-channel audit keys when this iter ran the
+        # audit (set only on the val_freq cadence — see _step's
+        # audit_grads flag). Brief 17 §11 logs them to W&B for the
+        # operator to monitor rot/pos vs seq balance.
+        for k, v in diag.items():
+            if k.startswith("grad_norm_") or k.startswith("grad_ratio_"):
+                out[k] = float(v)
+        return out
 
     @torch.no_grad()
     def _validate(it: int) -> dict:
