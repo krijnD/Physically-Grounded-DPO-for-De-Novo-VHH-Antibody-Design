@@ -51,8 +51,15 @@ def test_floor_pair_routes_to_lmdb() -> None:
 
 
 def test_blank_provenance_routes_to_lmdb() -> None:
-    """Empty / whitespace winner_provenance → LMDB lookup (backwards-compat)."""
-    for blank in ("", "   ", None, float("nan")):
+    """Empty / whitespace / NaN winner_provenance → LMDB lookup.
+
+    Covers the 2026-06-08 follow-up bug: pandas materialises Python
+    None as float('nan') in object-dtype Series, and ``str(NaN).strip()
+    == 'nan'`` — which would survive a naive emptiness check and
+    silently route to disk. Also guards the literal strings 'nan' /
+    'None' that survive parquet round-trips.
+    """
+    for blank in ("", "   ", None, float("nan"), "nan", "NaN", "None"):
         row = pd.Series({
             "gt_complex_id":     "7b2m",
             "winner_pdb_path":   "/x/y.pdb",

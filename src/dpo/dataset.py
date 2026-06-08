@@ -437,13 +437,19 @@ class PairDataset(Dataset):
             raw = row.get("winner_provenance", "")
         else:
             raw = row["winner_provenance"] if "winner_provenance" in row else ""
-        if raw is None:
+        # pandas converts Python None → NaN when materialising a Series
+        # with mixed/object dtype, so check both None and NaN before
+        # stringifying (str(float('nan')) == 'nan', which would survive
+        # the .strip() check and silently route to disk).
+        if raw is None or (isinstance(raw, float) and raw != raw):
             raw = ""
         try:
             provenance = str(raw).strip()
         except Exception:  # noqa: BLE001
             provenance = ""
-        if not provenance:
+        # Also treat literal 'nan' / 'none' (case-insensitive) as blank
+        # — defensive against parquet round-trips that stringify NaN.
+        if provenance.lower() in ("", "nan", "none"):
             return "lmdb", None
         return "disk", str(row["winner_pdb_path"])
 
