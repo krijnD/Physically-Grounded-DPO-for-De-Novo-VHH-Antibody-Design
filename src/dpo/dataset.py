@@ -232,9 +232,24 @@ class PairDataset(Dataset):
             )
 
         self.pairs_df = df
+
+        # Winner-source routing summary — counts how many pairs will pull
+        # winners from the LMDB (floor: winner = GT crystal) vs from disk
+        # (decoy: winner_provenance set, winner_pdb_path consumed). If
+        # this prints `disk=0` on a pool that was supposed to have decoys
+        # in it, you have a manifest-vs-loader drift bug like the one
+        # diagnosed on 2026-06-08 (see brief 17 deliverable).
+        n_disk_winners = 0
+        if "winner_provenance" in df.columns:
+            n_disk_winners = int(
+                df["winner_provenance"].fillna("").astype(str).str.strip().ne("").sum()
+            )
+        n_lmdb_winners = len(df) - n_disk_winners
         logger.info(
-            "PairDataset[%s]: %d pairs across %d GTs (split_mode=%s).",
+            "PairDataset[%s]: %d pairs across %d GTs (split_mode=%s) | "
+            "winner sources: lmdb=%d disk=%d",
             split, len(df), df["gt_complex_id"].nunique(), split_mode,
+            n_lmdb_winners, n_disk_winners,
         )
         # Cache of {pair_idx: (winner_data, loser_data)} — populated on
         # first access if caching is enabled. Disabled by default: with
@@ -255,42 +270,66 @@ class PairDataset(Dataset):
 
         entry = self._pdb_to_entry[gt_complex_id]
 
-        # Winner: pull from LMDB and deep-copy so transforms don't mutate
-        # the cached version (transforms set generate_flag in-place).
-        winner_raw = copy.deepcopy(self.base_dataset.get_structure(entry["id"]))
+        # GT scaffold — the canonical Chothia-numbered structure from
+        # the LMDB. Used as the alignment reference for cdr_flag,
+        # framework positions, and antigen positions on BOTH sides
+        # whenever the parsed side is sequentially-numbered (AAPR
+        # losers, decoy winners). In floor mode the winner IS this
+        # object, so the existing transfer semantics are preserved.
+        gt_raw = copy.deepcopy(self.base_dataset.get_structure(entry["id"]))
+
+        winner_source, winner_pdb_path = self._resolve_winner_source(row)
+        if winner_source == "lmdb":
+            # Floor pair: winner is the GT crystal. Same object as the
+            # scaffold; downstream transforms mutate it in place, but
+            # the scaffold-transfer step below short-circuits when
+            # winner is gt_raw, so no aliasing harm.
+            winner_raw = gt_raw
+        else:
+            # Decoy / non-GT winner: parse from disk under the GT's
+            # chain IDs, same way losers are parsed. The scaffold-
+            # transfer step below realigns it to gt_raw.
+            winner_raw = self._parse_pdb(
+                winner_pdb_path, entry, side_tag=f"winner__{row.get('winner_provenance', 'disk')}",
+            )
+            if winner_raw is None:
+                raise RuntimeError(
+                    f"Failed to parse winner PDB at idx={idx} pair={pair_id}: "
+                    f"{winner_pdb_path}"
+                )
 
         # Loser: parse on the fly using the SAME entry (so H_chain etc.
-        # match the winner). _preprocess_vhh_structure expects a "task"
-        # dict; we use a synthetic id so error messages identify the
-        # loser side cleanly.
-        loser_raw = self._parse_loser(loser_pdb_path, entry)
+        # match the GT scaffold). _preprocess_vhh_structure expects a
+        # "task" dict; we use a synthetic id so error messages identify
+        # the loser side cleanly.
+        loser_raw = self._parse_pdb(loser_pdb_path, entry, side_tag="loser")
         if loser_raw is None:
             raise RuntimeError(
                 f"Failed to parse loser PDB at idx={idx} pair={pair_id}: "
                 f"{loser_pdb_path}"
             )
 
-        # Align the pair so the masking pipeline produces byte-identical
-        # generate_flag / patch_idx between winner and loser. Three
-        # corrections, all on the loser (winner is canonical):
+        # Align both sides to the GT scaffold so the masking pipeline
+        # produces byte-identical generate_flag / patch_idx across the
+        # pair. Three corrections, applied to any disk-parsed side:
         #
-        # (a) cdr_flag — AAPR PDBs are sequentially numbered, GTs are
-        #     Chothia-numbered; `_label_heavy_chain_cdr` keys CDR labels
-        #     off resseq against Chothia ranges, so the same physical
-        #     CDR gets shifted cdr_flag indices. Copy winner's cdr_flag
-        #     onto the loser to relabel consistently.
+        # (a) cdr_flag — AAPR / decoy PDBs are sequentially numbered,
+        #     GTs are Chothia-numbered; `_label_heavy_chain_cdr` keys
+        #     CDR labels off resseq against Chothia ranges, so the same
+        #     physical CDR gets shifted cdr_flag indices. Copy the GT's
+        #     cdr_flag onto the side to relabel consistently.
         # (b) Framework positions — `PatchAroundAnchor` ranks residues
         #     by `cdist(pos_alpha, anchor_points)` and picks the top-128
         #     closest. Even sub-Å perturbations in framework positions
-        #     (from AAPR rounding, write/read precision) shift the
-        #     dist_anchor ranking and break topk ties differently,
-        #     yielding different patches on the same physical structure.
-        #     AAPR is *intended* to carry the framework verbatim from
-        #     the GT, so byte-copying the winner's framework positions
-        #     onto the loser is a no-op in the ideal case and a
-        #     precision-correction in the realistic case.
-        # (c) Antigen positions — same reasoning as (b); AAPR carries
-        #     antigen verbatim.
+        #     (from AAPR rounding, decoy reconstruction, write/read
+        #     precision) shift the dist_anchor ranking and break topk
+        #     ties differently, yielding different patches on the same
+        #     physical structure. AAPR / decoys are *intended* to carry
+        #     the framework verbatim from the GT, so byte-copying the
+        #     scaffold's framework positions is a no-op in the ideal
+        #     case and a precision-correction in the realistic case.
+        # (c) Antigen positions — same reasoning as (b); AAPR / decoys
+        #     carry the antigen verbatim.
         #
         # CRITICAL: we do NOT copy `aa` or the CDR-region positions.
         # Those are the per-residue content the DPO loss is supposed
@@ -303,34 +342,9 @@ class PairDataset(Dataset):
         # If the heavy-chain residue counts disagree (AAPR dropped/
         # added a residue), copying is unsafe and we let the alignment
         # guard below skip the pair.
-        if winner_raw.get("heavy") is not None and loser_raw.get("heavy") is not None:
-            w_heavy = winner_raw["heavy"]
-            l_heavy = loser_raw["heavy"]
-            if w_heavy["aa"].size(0) == l_heavy["aa"].size(0):
-                # (a) cdr_flag transfer
-                l_heavy["cdr_flag"] = w_heavy["cdr_flag"].clone()
-                for k in ("H1_seq", "H2_seq", "H3_seq"):
-                    if k in w_heavy:
-                        l_heavy[k] = w_heavy[k]
-                # (b) framework position transfer — clone first so we
-                # don't mutate the freshly-parsed loser tensor in place
-                # (paranoid: it isn't shared, but the cost is trivial).
-                fw_mask = (w_heavy["cdr_flag"] == 0)
-                l_heavy["pos_heavyatom"] = l_heavy["pos_heavyatom"].clone()
-                l_heavy["mask_heavyatom"] = l_heavy["mask_heavyatom"].clone()
-                l_heavy["pos_heavyatom"][fw_mask] = (
-                    w_heavy["pos_heavyatom"][fw_mask].clone()
-                )
-                l_heavy["mask_heavyatom"][fw_mask] = (
-                    w_heavy["mask_heavyatom"][fw_mask].clone()
-                )
-        # (c) antigen transfer
-        if winner_raw.get("antigen") is not None and loser_raw.get("antigen") is not None:
-            w_ag = winner_raw["antigen"]
-            l_ag = loser_raw["antigen"]
-            if w_ag["aa"].size(0) == l_ag["aa"].size(0):
-                l_ag["pos_heavyatom"] = w_ag["pos_heavyatom"].clone()
-                l_ag["mask_heavyatom"] = w_ag["mask_heavyatom"].clone()
+        if winner_raw is not gt_raw:
+            self._align_to_gt_scaffold(winner_raw, gt_raw)
+        self._align_to_gt_scaffold(loser_raw, gt_raw)
 
         # Apply masking + merge + patch with shared patch_mask across
         # the pair. Naively running self.transform on each side breaks
@@ -400,18 +414,84 @@ class PairDataset(Dataset):
         }
 
     # ── Helpers ─────────────────────────────────────────────────────
-    def _parse_loser(self, pdb_path: str, gt_entry: dict) -> Optional[dict]:
-        """Parse an AAPR-sampled PDB using the GT's chain IDs.
+    @staticmethod
+    def _resolve_winner_source(row) -> tuple[str, Optional[str]]:
+        """Route winner loading: LMDB (floor) vs disk (decoy / non-GT).
 
-        Critical: we pass the *GT entry* (with its H_chain, ag_chains)
-        as the parsing key. AAPR carries the antigen + framework chains
-        over verbatim, so the chain IDs match. Using the GT's entry
-        also guarantees the same CDR-labeling protocol is applied
-        (chothia ranges via ``_label_heavy_chain_cdr`` inside
-        ``_preprocess_vhh_structure``).
+        Returns ``("lmdb", None)`` when the pair does not carry a
+        ``winner_provenance`` sentinel (i.e., the winner is the GT
+        crystal pulled from the LMDB by ``gt_complex_id``); returns
+        ``("disk", winner_pdb_path)`` when ``winner_provenance`` is
+        present and non-empty, signalling the winner is a PDB on disk
+        that should be parsed the same way losers are.
+
+        Pure function of one parquet row; isolated here so the unit
+        test in ``scripts/test_pair_dataset_winner_routing.py`` can
+        exercise the routing logic without instantiating a
+        ``PairDataset``. Defends against the 2026-06-08 bug where the
+        winner_pdb_path swap was a manifest no-op because nothing
+        consumed the column.
+        """
+        provenance = ""
+        if hasattr(row, "get"):
+            raw = row.get("winner_provenance", "")
+        else:
+            raw = row["winner_provenance"] if "winner_provenance" in row else ""
+        if raw is None:
+            raw = ""
+        try:
+            provenance = str(raw).strip()
+        except Exception:  # noqa: BLE001
+            provenance = ""
+        if not provenance:
+            return "lmdb", None
+        return "disk", str(row["winner_pdb_path"])
+
+    @staticmethod
+    def _align_to_gt_scaffold(side_raw: dict, gt_raw: dict) -> None:
+        """Copy cdr_flag / framework / antigen from gt_raw onto side_raw.
+
+        In-place. No-op when residue counts disagree (the alignment
+        guard in __getitem__ will drop the pair). See the comment block
+        in ``__getitem__`` for the full rationale.
+        """
+        if side_raw.get("heavy") is not None and gt_raw.get("heavy") is not None:
+            gt_heavy = gt_raw["heavy"]
+            side_heavy = side_raw["heavy"]
+            if gt_heavy["aa"].size(0) == side_heavy["aa"].size(0):
+                side_heavy["cdr_flag"] = gt_heavy["cdr_flag"].clone()
+                for k in ("H1_seq", "H2_seq", "H3_seq"):
+                    if k in gt_heavy:
+                        side_heavy[k] = gt_heavy[k]
+                fw_mask = (gt_heavy["cdr_flag"] == 0)
+                side_heavy["pos_heavyatom"] = side_heavy["pos_heavyatom"].clone()
+                side_heavy["mask_heavyatom"] = side_heavy["mask_heavyatom"].clone()
+                side_heavy["pos_heavyatom"][fw_mask] = (
+                    gt_heavy["pos_heavyatom"][fw_mask].clone()
+                )
+                side_heavy["mask_heavyatom"][fw_mask] = (
+                    gt_heavy["mask_heavyatom"][fw_mask].clone()
+                )
+        if side_raw.get("antigen") is not None and gt_raw.get("antigen") is not None:
+            gt_ag = gt_raw["antigen"]
+            side_ag = side_raw["antigen"]
+            if gt_ag["aa"].size(0) == side_ag["aa"].size(0):
+                side_ag["pos_heavyatom"] = gt_ag["pos_heavyatom"].clone()
+                side_ag["mask_heavyatom"] = gt_ag["mask_heavyatom"].clone()
+
+    def _parse_pdb(
+        self, pdb_path: str, gt_entry: dict, *, side_tag: str = "pdb",
+    ) -> Optional[dict]:
+        """Parse a PDB on disk under the GT's chain IDs.
+
+        Used for both losers (AAPR-sampled) and decoy winners. Passing
+        the *GT entry* (with its H_chain, ag_chains) ensures the chain
+        IDs and CDR-labeling protocol match across all three sides
+        (GT scaffold, winner, loser). ``side_tag`` only appears in
+        error messages — it doesn't influence parsing.
         """
         task = {
-            "id": f"loser__{Path(pdb_path).stem}",
+            "id": f"{side_tag}__{Path(pdb_path).stem}",
             "entry": gt_entry,
             "pdb_path": pdb_path,
         }
