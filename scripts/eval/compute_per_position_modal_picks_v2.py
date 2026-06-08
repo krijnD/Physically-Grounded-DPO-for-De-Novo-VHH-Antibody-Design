@@ -68,6 +68,12 @@ EVAL_CSV_MAP = {
     ("ipo_floor_beta5",     "oldtest"): "runs/dpo/ipo_seqonly_floor_beta5/eval_test_design.csv",
     ("ipo_expanded_beta05", "oldtest"): "runs/dpo/ipo_seqonly_expanded_beta05/eval_oldtest_design.csv",
     ("ipo_expanded_beta05", "newtest"): "runs/dpo/ipo_seqonly_expanded_beta05/eval_newtest_design.csv",
+    # Brief 17 §12 — all-channel DPO on decoy-t1 pair pool; OLD test for
+    # all 3 β values, NEW test only for β=0.05 (matches Brief 16 reporting).
+    ("decoy_t1_allchannel_b0005", "oldtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta0005/eval_oldtest_design.csv",
+    ("decoy_t1_allchannel_b05",   "oldtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta05/eval_oldtest_design.csv",
+    ("decoy_t1_allchannel_b05",   "newtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta05/eval_newtest_design.csv",
+    ("decoy_t1_allchannel_b5",    "oldtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta5/eval_oldtest_design.csv",
 }
 
 EXPECTED_COLS = {"cdr", "entry_id", "native_seq", "gen_seq", "sample"}
