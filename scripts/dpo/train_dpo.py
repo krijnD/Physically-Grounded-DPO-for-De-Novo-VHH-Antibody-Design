@@ -111,6 +111,7 @@ from src.dpo.loss import (  # noqa: E402
     check_pair_alignment,
     forward_pair_with_shared_noise,
 )
+from src.dpo.loss_ipo import ipo_loss  # noqa: E402
 
 # Optional: TF32 for A100s.
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -443,6 +444,16 @@ def main() -> int:
     loss_weights = dict(config.train.loss_weights)
     beta_dpo = float(config.dpo.beta_dpo)
     aggregation = str(config.dpo.get("aggregation", "residue"))
+    # Brief 18: objective dispatch — "dpo" (default; abdpo_loss) or
+    # "ipo" (loss_ipo.ipo_loss). Both take the same parameter signature
+    # so the dispatch is one line at each loss-call site (one in the
+    # main forward path and one in the per-channel grad audit).
+    objective = str(config.dpo.get("objective", "dpo")).lower()
+    if objective not in ("dpo", "ipo"):
+        raise ValueError(
+            f"config.dpo.objective must be 'dpo' or 'ipo', got {objective!r}"
+        )
+    _loss_fn = ipo_loss if objective == "ipo" else abdpo_loss
     # eval_mode_theta: put π_θ into .eval() during DPO training. The
     # default is True because keeping π_θ in .train() (dropout active)
     # while π_ref is in .eval() (dropout off) creates an asymmetric
@@ -488,7 +499,7 @@ def main() -> int:
             model_theta.zero_grad(set_to_none=True)
             ch_weights = {k: 0.0 for k in PER_CHANNEL_AUDIT_KEYS}
             ch_weights[ch] = 1.0
-            ch_loss, _ = abdpo_loss(
+            ch_loss, _ = _loss_fn(
                 pair_losses_,
                 mask=mask_,
                 loss_weights=ch_weights,
@@ -555,7 +566,7 @@ def main() -> int:
                     device=torch.device(args.device),
                 )
 
-        loss, diag = abdpo_loss(
+        loss, diag = _loss_fn(
             pair_losses,
             mask=batch_w["generate_flag"],
             loss_weights=loss_weights,
@@ -658,8 +669,22 @@ def main() -> int:
         # audit (set only on the val_freq cadence — see _step's
         # audit_grads flag). Brief 17 §11 logs them to W&B for the
         # operator to monitor rot/pos vs seq balance.
+        # Brief 18 §7: also forward IPO-specific diagnostics
+        # (tau_target, margin_distance_from_tau_mean, converged_pair_fraction)
+        # so the operator can watch IPO convergence on W&B.
+        IPO_EXTRA_KEYS = (
+            "tau_target",
+            "margin_distance_from_tau_mean",
+            "converged_pair_fraction",
+            "margin_per_residue_mean",
+            "mask_count_mean",
+        )
         for k, v in diag.items():
-            if k.startswith("grad_norm_") or k.startswith("grad_ratio_"):
+            if (
+                k.startswith("grad_norm_")
+                or k.startswith("grad_ratio_")
+                or k in IPO_EXTRA_KEYS
+            ):
                 out[k] = float(v)
         return out
 
@@ -699,12 +724,19 @@ def main() -> int:
             int(warmup_cfg.max_iters),
         )
     logger.info(
-        "Starting DPO training: iters %d → %d  |  val every %d  |  "
-        "β=%.3f  |  T=%d  |  aggregation=%s  |  patience=%d  |  "
-        "grad_clip=%.2f  |  π_θ mode=%s",
-        it_first, max_iters, val_freq, beta_dpo, T, aggregation, patience,
-        grad_clip, "eval" if eval_mode_theta else "train",
+        "Starting DPO training: objective=%s  |  iters %d → %d  |  "
+        "val every %d  |  β=%.3f  |  T=%d  |  aggregation=%s  |  "
+        "patience=%d  |  grad_clip=%.2f  |  π_θ mode=%s",
+        objective.upper(), it_first, max_iters, val_freq, beta_dpo, T,
+        aggregation, patience, grad_clip,
+        "eval" if eval_mode_theta else "train",
     )
+    if objective == "ipo":
+        logger.info(
+            "IPO regression target τ = 1/(2β) = %.3f (m near 0 → loss "
+            "near τ² = %.3f; m near τ → loss near 0).",
+            1.0 / (2.0 * beta_dpo), (1.0 / (2.0 * beta_dpo)) ** 2,
+        )
     t_train_start = time.time()
 
     try:

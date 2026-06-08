@@ -1,0 +1,107 @@
+# Brief 18 — IPO (bounded-regression DPO variant) at β=0.005 on the
+# FLOOR pair pool (928 ref-margin-filtered pairs). This is the
+# HEADLINE run: tests whether the Brief 16 Isoleucine-homopolymer
+# collapse at DPO-β=0.005 was a DPO-formulation failure (unbounded
+# log-sigmoid exploitable at low β) or a data-property failure (the
+# pair pool fundamentally encourages Ile).
+#
+# Expected outcome (per Brief 18 §3): IPO should escape the collapse.
+# At low β, IPO's regression target τ=1/(2β)=100 is large, so the
+# model still gets a strong push, but the quadratic penalty *prevents
+# over-shooting* — the model is penalised just as much for pushing m
+# past τ as for missing it. Reward-hacking is structurally suppressed.
+#
+# Inputs (identical to Brief 16 vhh_dpo_seqonly_filtered_beta0005.yml):
+#   * π_ref:    runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt (FLOOR π_ref)
+#   * Pair pool: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/
+#                pairs_filtered_marginGTp0.0.parquet (928 pairs after filter)
+#
+# Only diff vs vhh_dpo_seqonly_filtered_beta0005.yml: dpo.objective: ipo.
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  # SEQ-ONLY: same as Brief 16 (zero structural channels). Apples-to-
+  # apples vs DPO-β=0.005; Brief 17 owns the all-channel ablation.
+  loss_weights:
+    rot: 0.0
+    pos: 0.0
+    seq: 1.0
+  # 5800 iters — matches Brief 16's max_iters so wall-clock budgets
+  # match. Early stop usually fires well before this on this pool.
+  max_iters: 5800
+  val_freq: 100
+  batch_size: 4
+  seed: 42
+  # Brief 18 §7: IPO's gradient is 2·(m-τ)·∂m/∂θ. For low β=0.005 the
+  # raw gradient magnitudes can be large early in training (m starts
+  # at ~0, τ=100, so the multiplier is 2·(−100)·∂m/∂θ = −200·∂m/∂θ).
+  # 0.5 cap dampens the same way it did for DPO; relax later if
+  # convergence is suspiciously slow.
+  max_grad_norm: 0.5
+  ema_decay: 0.999
+  early_stop_patience: 30
+  save_top_k: 3
+  optimizer:
+    type: adam
+    lr: 1.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-7
+
+# ── DPO/IPO block ────────────────────────────────────────────────────
+dpo:
+  # FLOOR π_ref (same as Brief 16 floor runs).
+  pi_ref_checkpoint: runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+
+  # FLOOR pair pool — 928 pairs after ref-margin filter (Brief 16).
+  pair_parquet: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs_filtered_marginGTp0.0.parquet
+
+  # Brief 18: objective dispatch. "ipo" routes the trainer to
+  # src.dpo.loss_ipo.ipo_loss instead of src.dpo.loss.abdpo_loss.
+  # Both functions share the same parameter signature; the only diff
+  # is the inner aggregation (log-sigmoid → quadratic-around-τ).
+  objective: ipo
+
+  # IPO reuses the β symbol as its regression-target hyperparameter:
+  # τ = 1/(2β). At β=0.005, τ=100 — a large target margin. The
+  # corresponding DPO run at β=0.005 reward-hacked to Ile-homopolymer
+  # (Brief 16, val 11.80 but 99.7% IIII...III generation).
+  beta_dpo: 0.005
+
+  num_timesteps: 100
+  aggregation: residue
+  eval_mode_theta: true
+  val_gt_holdout: 20
+  val_split_seed: 42
+  val_gt_ids: null
+  drop_misaligned: true
+  pair_seed_offset: 0
+
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/vhh_ft
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: train
+    heavy_max_resseq: 150
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor

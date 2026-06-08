@@ -61,6 +61,13 @@ EVAL_CSV_MAP = {
     # Brief 16 β-sweep — corrective ablation; OLD test only.
     ("floor_pi_theta_b0005","oldtest"): "runs/dpo/floor_dpo_beta0005/eval_test_design.csv",
     ("floor_pi_theta_b05",  "oldtest"): "runs/dpo/floor_dpo_beta05/eval_test_design.csv",
+    # Brief 18 IPO β-sweep — robustness baseline; OLD test for floor runs,
+    # OLD+NEW for the expanded run.
+    ("ipo_floor_beta0005",  "oldtest"): "runs/dpo/ipo_seqonly_floor_beta0005/eval_test_design.csv",
+    ("ipo_floor_beta05",    "oldtest"): "runs/dpo/ipo_seqonly_floor_beta05/eval_test_design.csv",
+    ("ipo_floor_beta5",     "oldtest"): "runs/dpo/ipo_seqonly_floor_beta5/eval_test_design.csv",
+    ("ipo_expanded_beta05", "oldtest"): "runs/dpo/ipo_seqonly_expanded_beta05/eval_oldtest_design.csv",
+    ("ipo_expanded_beta05", "newtest"): "runs/dpo/ipo_seqonly_expanded_beta05/eval_newtest_design.csv",
 }
 
 EXPECTED_COLS = {"cdr", "entry_id", "native_seq", "gen_seq", "sample"}

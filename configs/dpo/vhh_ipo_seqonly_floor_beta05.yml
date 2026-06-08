@@ -1,0 +1,71 @@
+# Brief 18 — IPO at β=0.05 on the FLOOR pair pool. Head-to-head with
+# Brief 16's floor DPO-seqonly at β=0.05 (val 12.02). Tests whether
+# IPO matches or beats DPO at the goldilocks β.
+#
+# Inputs identical to vhh_dpo_seqonly_filtered.yml. Only diff: objective: ipo.
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  loss_weights:
+    rot: 0.0
+    pos: 0.0
+    seq: 1.0
+  max_iters: 5800
+  val_freq: 100
+  batch_size: 4
+  seed: 42
+  max_grad_norm: 0.5
+  ema_decay: 0.999
+  early_stop_patience: 30
+  save_top_k: 3
+  optimizer:
+    type: adam
+    lr: 1.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-7
+
+dpo:
+  pi_ref_checkpoint: runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+  pair_parquet: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs_filtered_marginGTp0.0.parquet
+  objective: ipo
+  # τ = 1/(2·0.05) = 10. Mid-range margin target. Matches floor DPO-β=0.05
+  # configuration so the only confound is the objective itself.
+  beta_dpo: 0.05
+  num_timesteps: 100
+  aggregation: residue
+  eval_mode_theta: true
+  val_gt_holdout: 20
+  val_split_seed: 42
+  val_gt_ids: null
+  drop_misaligned: true
+  pair_seed_offset: 0
+
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/vhh_ft
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: train
+    heavy_max_resseq: 150
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor

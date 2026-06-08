@@ -1,0 +1,74 @@
+# Brief 18 — IPO at β=0.5 on the FLOOR pair pool. High-β plateau check:
+# Brief 16's DPO-β=0.5 effectively did no update (val 12.07 ≈ π_ref baseline).
+# Tests whether IPO at the same β also plateaus, or whether the bounded
+# objective lets it still move.
+#
+# At β=0.5, IPO's target is τ=1/(2·0.5)=1 — a very small margin. The model
+# is told "barely prefer the winner"; the regression toward such a tight
+# target should be near-trivial and so the update should be near-zero.
+# Expected behaviour: similar to DPO-β=0.5 (plateau at π_ref baseline).
+
+model:
+  type: diffab
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+train:
+  loss_weights:
+    rot: 0.0
+    pos: 0.0
+    seq: 1.0
+  max_iters: 5800
+  val_freq: 100
+  batch_size: 4
+  seed: 42
+  max_grad_norm: 0.5
+  ema_decay: 0.999
+  early_stop_patience: 30
+  save_top_k: 3
+  optimizer:
+    type: adam
+    lr: 1.0e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.5
+    patience: 8
+    min_lr: 1.0e-7
+
+dpo:
+  pi_ref_checkpoint: runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+  pair_parquet: data/aapr/ftseed42_jfix_trainval_K8_20260525/dpo/pairs_filtered_marginGTp0.0.parquet
+  objective: ipo
+  # τ = 1/(2·0.5) = 1. Tight regression target; expect near-π_ref behaviour.
+  beta_dpo: 0.5
+  num_timesteps: 100
+  aggregation: residue
+  eval_mode_theta: true
+  val_gt_holdout: 20
+  val_split_seed: 42
+  val_gt_ids: null
+  drop_misaligned: true
+  pair_seed_offset: 0
+
+dataset:
+  train:
+    type: vhh_andd
+    manifest_path: data/datasets/diffab_manifest.tsv
+    pdb_dir:       /projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/VHH_structures_post_diffab
+    processed_dir: data/processed/vhh_ft
+    splits_path:   data/datasets/clustering/cluster_splits.json
+    split: train
+    heavy_max_resseq: 150
+    transform:
+      - type: mask_multiple_cdrs
+      - type: merge_chains
+      - type: patch_around_anchor
