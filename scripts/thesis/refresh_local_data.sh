@@ -68,6 +68,19 @@ for f in design_samples_master.parquet \
     rsync -avz "$SNEL:$REMOTE/data/eval/$f" "data/eval/$f"
 done
 
+# ── Brief 17 — decoy-winners + all-channel DPO deliverable ───────────
+# Pull the deliverable + the bathtub figure + the machine-readable
+# sweep CSV. docs/ is gitignored, so rsync is the only path off Snellius.
+mkdir -p docs/executor_briefs
+rsync -avz \
+    "$SNEL:$REMOTE/docs/executor_briefs/17_decoy_winners_deliverable.md" \
+    docs/executor_briefs/17_decoy_winners_deliverable.md 2>/dev/null \
+    || echo "  (17_decoy_winners_deliverable.md not on Snellius yet — use the local Mac copy)"
+
+mkdir -p data/results
+rsync -avz "$SNEL:$REMOTE/data/results/decoy_t_sweep.csv" data/results/decoy_t_sweep.csv 2>/dev/null \
+    || echo "  (decoy_t_sweep.csv not present on Snellius — run tabulate_decoy_sweep.py with --output-csv first)"
+
 # ── Brief 18 — IPO baseline executor deliverable (docs/ gitignored) ──
 mkdir -p docs/executor_briefs
 rsync -avz \
@@ -80,5 +93,11 @@ rsync -avz \
 mkdir -p docs/figures/phase_b
 rsync -avz --include='*.pdf' --include='*.png' --include='*.md' --exclude='*' \
     "$SNEL:$REMOTE/docs/figures/phase_b/" docs/figures/phase_b/
+
+# Phase 2 figures (bathtub from Brief 17 §9.2, etc.) — same docs/-gitignored
+# situation as phase_b.
+mkdir -p docs/figures/phase2
+rsync -avz --include='*.pdf' --include='*.png' --include='*.md' --exclude='*' \
+    "$SNEL:$REMOTE/docs/figures/phase2/" docs/figures/phase2/
 
 echo "Refresh complete."
