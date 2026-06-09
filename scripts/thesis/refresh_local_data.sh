@@ -29,7 +29,14 @@ for d in \
     runs/vhh_ft/seed42_jfix_expanded \
     runs/vhh_ft/seed42_jfix \
     runs/dpo/floor_dpo_beta0005 \
-    runs/dpo/floor_dpo_beta05 ; do
+    runs/dpo/floor_dpo_beta05 \
+    runs/dpo/ipo_seqonly_floor_beta0005 \
+    runs/dpo/ipo_seqonly_floor_beta05 \
+    runs/dpo/ipo_seqonly_floor_beta5 \
+    runs/dpo/ipo_seqonly_expanded_beta05 \
+    runs/dpo/dpo_allchannel_decoy_t1_beta0005 \
+    runs/dpo/dpo_allchannel_decoy_t1_beta05 \
+    runs/dpo/dpo_allchannel_decoy_t1_beta5 ; do
     mkdir -p "$d"
     rsync -avz --include='eval*' --include='*.json' --include='*.csv' --exclude='*' \
         "$SNEL:$REMOTE/$d/" "$d/" 2>&1 | tail -3
@@ -55,9 +62,18 @@ for f in design_samples_master.parquet \
          caar_epif1_beta0005.parquet \
          caar_epif1_beta05.parquet \
          scrmsd_beta0005.parquet \
-         scrmsd_beta05.parquet ; do
+         scrmsd_beta05.parquet \
+         per_position_modal_picks_brief18.parquet \
+         per_position_modal_picks_brief17.parquet ; do
     rsync -avz "$SNEL:$REMOTE/data/eval/$f" "data/eval/$f"
 done
+
+# ── Brief 18 — IPO baseline executor deliverable (docs/ gitignored) ──
+mkdir -p docs/executor_briefs
+rsync -avz \
+    "$SNEL:$REMOTE/docs/executor_briefs/18_ipo_deliverable.md" \
+    docs/executor_briefs/18_ipo_deliverable.md 2>/dev/null \
+    || echo "  (18_ipo_deliverable.md not on Snellius yet — use the local Mac copy)"
 
 # Phase B figures + summary table (docs/ is fully gitignored, so this is
 # the ONLY way these reach local).
