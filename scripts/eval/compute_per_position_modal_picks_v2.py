@@ -74,6 +74,9 @@ EVAL_CSV_MAP = {
     ("decoy_t1_allchannel_b05",   "oldtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta05/eval_oldtest_design.csv",
     ("decoy_t1_allchannel_b05",   "newtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta05/eval_newtest_design.csv",
     ("decoy_t1_allchannel_b5",    "oldtest"): "runs/dpo/dpo_allchannel_decoy_t1_beta5/eval_oldtest_design.csv",
+    # Brief 22 §4.6 — membership-confound diagnostic; seq-only β=0.05; OLD test only.
+    ("brief22_e1_decoyt1_seqonly_beta05",        "oldtest"): "runs/dpo/brief22_e1_decoyt1_seqonly_beta05/eval_test_design.csv",
+    ("brief22_e2_sample_minErep_seqonly_beta05", "oldtest"): "runs/dpo/brief22_e2_sample_minErep_seqonly_beta05/eval_test_design.csv",
 }
 
 EXPECTED_COLS = {"cdr", "entry_id", "native_seq", "gen_seq", "sample"}
