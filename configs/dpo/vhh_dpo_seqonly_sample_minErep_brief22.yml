@@ -97,7 +97,10 @@ train:
   # Seqonly canary best-val was at iter 900 (12.2697) then degraded by
   # iter 1900. With filtered pairs (cleaner signal) we want patience to
   # tolerate slower improvement past the previous plateau.
-  early_stop_patience: 0
+  # AUDIT-5: trainer treats patience=0 as "stop after first val" (no_improve_count
+  # resets to 0 on improvement, then 0>=0 trips immediately). Sentinel 9999 ≫ the
+  # 20 validations possible in this budget effectively disables early stop.
+  early_stop_patience: 9999
   save_top_k: 3
   optimizer:
     type: adam
