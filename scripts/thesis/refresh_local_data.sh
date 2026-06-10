@@ -36,7 +36,9 @@ for d in \
     runs/dpo/ipo_seqonly_expanded_beta05 \
     runs/dpo/dpo_allchannel_decoy_t1_beta0005 \
     runs/dpo/dpo_allchannel_decoy_t1_beta05 \
-    runs/dpo/dpo_allchannel_decoy_t1_beta5 ; do
+    runs/dpo/dpo_allchannel_decoy_t1_beta5 \
+    runs/dpo/brief22_e1_decoyt1_seqonly_beta05 \
+    runs/dpo/brief22_e2_sample_minErep_seqonly_beta05 ; do
     mkdir -p "$d"
     rsync -avz --include='eval*' --include='*.json' --include='*.csv' --exclude='*' \
         "$SNEL:$REMOTE/$d/" "$d/" 2>&1 | tail -3
@@ -64,7 +66,8 @@ for f in design_samples_master.parquet \
          scrmsd_beta0005.parquet \
          scrmsd_beta05.parquet \
          per_position_modal_picks_brief18.parquet \
-         per_position_modal_picks_brief17.parquet ; do
+         per_position_modal_picks_brief17.parquet \
+         per_position_modal_picks_brief22.parquet ; do
     rsync -avz "$SNEL:$REMOTE/data/eval/$f" "data/eval/$f"
 done
 
