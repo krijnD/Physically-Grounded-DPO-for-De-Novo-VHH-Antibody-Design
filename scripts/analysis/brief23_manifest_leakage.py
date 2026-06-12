@@ -14,7 +14,10 @@ Inputs (paths passed via argparse so nothing is environment-dependent):
 - expanded manifest TSV (required; filename TBD by Krijn at run time)
 - floor manifest TSV (default: data/datasets/diffab_manifest.tsv)
 - floor cluster TSV + rep fasta + concat_cdrs fasta (Brief 05 outputs)
-- expanded concat_cdrs fasta (Brief 05 expanded clustering output)
+- Sequence source for the added entries -- ONE of:
+  * `--expanded-concat-fasta` (Brief 05 expanded clustering output, if it exists), OR
+  * `--combined-curated-csv` (merge_curated_sources.py output -- has `Ab/Nano
+    H_Chain AA` + `source` columns; the script extracts CDRs via abnumber).
 
 Outputs (under --out-dir, default tmp_brief23/):
 - added_concat_cdrs.fasta             # not committed (large, regenerable)
@@ -67,8 +70,17 @@ def parse_args():
                    default="data/datasets/clustering/cluster_result_rep_seq.fasta")
     p.add_argument("--floor-concat-fasta",
                    default="data/datasets/clustering/concat_cdrs.fasta")
-    p.add_argument("--expanded-concat-fasta", required=True,
-                   help="path to the 927-row concat_cdrs fasta (Brief 05 expanded clustering output)")
+    p.add_argument("--expanded-concat-fasta", default=None,
+                   help="optional: path to a 927-row concat_cdrs fasta if Brief 05's "
+                        "expanded clustering produced one. Mutually exclusive with "
+                        "--combined-curated-csv; one of the two is required.")
+    p.add_argument("--combined-curated-csv", default=None,
+                   help="optional: path to combined_curated.csv (merge_curated_sources.py "
+                        "output). When --expanded-concat-fasta is absent, this is used to "
+                        "extract CDRs in-script via abnumber. Also feeds the ANDD vs "
+                        "SAbDab arithmetic reconciliation via its `source` column.")
+    p.add_argument("--scheme", default="chothia",
+                   help="abnumber numbering scheme for in-script CDR extraction (default chothia).")
     p.add_argument("--out-dir", default="tmp_brief23")
     p.add_argument("--mmseqs-bin", default="mmseqs")
     return p.parse_args()
@@ -80,6 +92,69 @@ def ensure_entry_id(df):
     # Floor manifest convention from Brief 05: <pdb_lower>_<Hchain>
     df["entry_id"] = df["pdb"].astype(str).str.lower() + "_" + df["Hchain"].astype(str)
     return df
+
+
+def extract_concat_cdrs(seq: str, scheme: str = "chothia"):
+    """Mirror of scripts/diffab_ft/cluster_split.py::extract_concat_cdrs.
+
+    Returns CDR-H1+H2+H3 concatenated, or None if abnumber refuses the sequence.
+    Kept local so this script has no intra-repo imports (Snellius PYTHONPATH agnostic).
+    """
+    from abnumber import Chain as AbnumberChain
+    from abnumber.exceptions import ChainParseError
+    try:
+        chain = AbnumberChain(seq, scheme=scheme)
+    except (ChainParseError, ValueError):
+        return None
+    if chain.chain_type != "H":
+        return None
+    cdr1 = chain.cdr1_seq or ""
+    cdr2 = chain.cdr2_seq or ""
+    cdr3 = chain.cdr3_seq or ""
+    if not (cdr1 and cdr2 and cdr3):
+        return None
+    return cdr1 + cdr2 + cdr3
+
+
+def build_concat_cdrs_from_curated(curated_csv_path, scheme):
+    """Read combined_curated.csv and return {entry_id: cdr_concat_seq}."""
+    cur = pd.read_csv(curated_csv_path)
+    needed = {"PDB_ID", "H_Chain Auth Asym ID", "Ab/Nano H_Chain AA"}
+    missing_cols = needed - set(cur.columns)
+    if missing_cols:
+        raise ValueError(f"--combined-curated-csv missing required columns: {missing_cols}. "
+                         f"Got columns: {list(cur.columns)}")
+    out = {}
+    n_no_seq, n_no_cdr = 0, 0
+    for _, row in cur.iterrows():
+        pdb = str(row["PDB_ID"]).strip().lower()
+        hch = str(row["H_Chain Auth Asym ID"]).strip()
+        seq = str(row["Ab/Nano H_Chain AA"]).strip()
+        if not seq or seq.lower() == "nan":
+            n_no_seq += 1
+            continue
+        cdrs = extract_concat_cdrs(seq, scheme=scheme)
+        if cdrs is None:
+            n_no_cdr += 1
+            continue
+        out[f"{pdb}_{hch}"] = cdrs
+    print(f"Curated CSV: {len(cur)} rows; extracted CDRs for {len(out)} entries "
+          f"(skipped {n_no_seq} no-seq, {n_no_cdr} CDR-extraction failed).")
+    return out
+
+
+def curated_source_lookup(curated_csv_path):
+    """Return {entry_id: source_label} from combined_curated.csv (if `source` exists)."""
+    cur = pd.read_csv(curated_csv_path, usecols=lambda c: c in {
+        "PDB_ID", "H_Chain Auth Asym ID", "source"})
+    if "source" not in cur.columns:
+        return {}
+    out = {}
+    for _, row in cur.iterrows():
+        pdb = str(row["PDB_ID"]).strip().lower()
+        hch = str(row["H_Chain Auth Asym ID"]).strip()
+        out[f"{pdb}_{hch}"] = str(row["source"]).strip()
+    return out
 
 
 def main():
@@ -111,19 +186,35 @@ def main():
     print(f"Floor IDs dropped in expanded: {len(dropped_ids)}")
 
     # -- Reconcile arithmetic --
-    source_col = next((c for c in ("source", "source_dataset", "origin") if c in exp.columns), None)
-    if source_col:
+    # Priority for `source` info:
+    #   1. `source` / `source_dataset` / `origin` column on the expanded manifest itself.
+    #   2. `source` column in --combined-curated-csv (when manifest lacks one).
+    #   3. fall back to "unknown".
+    manifest_source_col = next((c for c in ("source", "source_dataset", "origin")
+                                 if c in exp.columns), None)
+    id_to_source = {}
+    if manifest_source_col:
         added_rows = exp[exp["entry_id"].isin(added_ids)]
-        source_counts = added_rows[source_col].value_counts().to_dict()
-        id_to_source = dict(zip(added_rows["entry_id"], added_rows[source_col]))
-        print(f"Added entries by source ({source_col}):")
+        id_to_source = dict(zip(added_rows["entry_id"], added_rows[manifest_source_col]))
+        print(f"Source labels: from expanded manifest column '{manifest_source_col}'.")
+    elif args.combined_curated_csv and Path(args.combined_curated_csv).exists():
+        id_to_source = curated_source_lookup(args.combined_curated_csv)
+        if id_to_source:
+            print(f"Source labels: from combined_curated.csv `source` column.")
+
+    if id_to_source:
+        added_with_source = [(aid, id_to_source.get(aid, "unknown")) for aid in added_ids_sorted]
+        source_counts = {}
+        for _, s in added_with_source:
+            source_counts[s] = source_counts.get(s, 0) + 1
+        print("Added entries by source:")
         for k, v in source_counts.items():
             print(f"  {k}: {v}")
     else:
         source_counts = {"unknown": len(added_ids)}
         id_to_source = {aid: "unknown" for aid in added_ids}
-        print("No source column on the expanded manifest; downstream needs another way "
-              "to partition rescue vs SAbDab. Tagging all added entries as 'unknown'.")
+        print("No source labels available (no `source` column on manifest, no curated CSV). "
+              "Tagging all added entries as 'unknown'.")
 
     arith_path = out_dir / "manifest_arithmetic_summary.txt"
     writer_claim = 465 + 312 + 130  # =907
@@ -143,24 +234,38 @@ def main():
     print(f"Wrote {arith_path}")
 
     # -- Extract concat_cdrs for added entries --
+    # Path A: a pre-built expanded concat_cdrs fasta exists -> just read it.
+    # Path B: combined_curated.csv -> extract CDRs in-script via abnumber.
+    # At least one must resolve to a usable record set.
     from Bio import SeqIO
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
 
-    if not Path(args.expanded_concat_fasta).exists():
-        print(f"ERROR: --expanded-concat-fasta does not exist: {args.expanded_concat_fasta}")
-        print("       Brief 05 produced this during expanded clustering; Krijn must locate it.")
+    all_cdrs = {}  # entry_id -> CDR concat string
+    src_descr = None
+    if args.expanded_concat_fasta and Path(args.expanded_concat_fasta).exists():
+        recs = list(SeqIO.parse(args.expanded_concat_fasta, "fasta"))
+        all_cdrs = {r.id: str(r.seq) for r in recs}
+        src_descr = f"expanded concat_cdrs fasta ({args.expanded_concat_fasta})"
+    elif args.combined_curated_csv and Path(args.combined_curated_csv).exists():
+        all_cdrs = build_concat_cdrs_from_curated(args.combined_curated_csv, args.scheme)
+        src_descr = f"combined_curated.csv ({args.combined_curated_csv})"
+    else:
+        print("ERROR: no sequence source provided. Pass EITHER --expanded-concat-fasta")
+        print("       (Brief 05 expanded clustering output) OR --combined-curated-csv")
+        print("       (merge_curated_sources.py output -- has Ab/Nano H_Chain AA column).")
         sys.exit(1)
+    print(f"Loaded {len(all_cdrs)} concat_cdrs records from {src_descr}.")
 
-    all_recs = {r.id: r for r in SeqIO.parse(args.expanded_concat_fasta, "fasta")}
-    print(f"Loaded {len(all_recs)} expanded concat_cdrs from {args.expanded_concat_fasta}")
-
-    missing = [aid for aid in added_ids_sorted if aid not in all_recs]
+    missing = [aid for aid in added_ids_sorted if aid not in all_cdrs]
     if missing:
-        print(f"WARNING: {len(missing)}/{len(added_ids)} added IDs have no concat_cdrs entry")
+        print(f"WARNING: {len(missing)}/{len(added_ids)} added IDs have no CDR record")
         print(f"         (first 5 missing: {missing[:5]})")
-    added_recs = [all_recs[aid] for aid in added_ids_sorted if aid in all_recs]
+    added_records = [SeqRecord(Seq(all_cdrs[aid]), id=aid, description="")
+                      for aid in added_ids_sorted if aid in all_cdrs]
     added_fa = out_dir / "added_concat_cdrs.fasta"
-    SeqIO.write(added_recs, added_fa, "fasta")
-    print(f"Wrote {added_fa} ({len(added_recs)} records)")
+    SeqIO.write(added_records, added_fa, "fasta")
+    print(f"Wrote {added_fa} ({len(added_records)} records)")
 
     # -- Run MMseqs2 search (added → floor reps) --
     work = out_dir / "mmseqs_work"
@@ -202,7 +307,7 @@ def main():
     rows = []
     for aid in added_ids_sorted:
         src = id_to_source.get(aid, "unknown")
-        if aid not in all_recs:
+        if aid not in all_cdrs:
             rows.append({
                 "entry_id": aid, "source": src,
                 "cluster_id": "NO_CDR_DATA",
