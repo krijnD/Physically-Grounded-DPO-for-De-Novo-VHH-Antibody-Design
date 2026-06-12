@@ -1,0 +1,17 @@
+=== Expanded-holdout MMseqs2 audit (Brief 27) ===
+Threshold: ≥85 % CDR identity
+MMseqs2 params: --min-seq-id 0.7 -c 0.8 --cov-mode 0
+
+Expanded splits: train 463, test 86
+Hardcoded 83-entry holdout vs splits.test: 83/83 match
+Train fasta records: 462 of 463 expanded-train members
+Test  fasta records: 82 of 83 hardcoded holdout entries
+
+Total flagged train→holdout pairs: 0
+  Brief 23-known training entries: 0
+  NEW (not in Brief 23):           0
+Distinct expanded-holdout entries contaminated: 0
+Max % identity among flagged pairs: 0.0%
+
+Detail (sorted by % identity desc):
+  None.
