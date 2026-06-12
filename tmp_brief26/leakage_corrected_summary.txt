@@ -1,0 +1,23 @@
+=== SQ1 LEAKAGE-CORRECTED ELBO SUMMARY ===
+Config:      configs/diffab_ft/vhh_ft_expanded.yml
+Anchor:      runs/vhh_ft/seed42_jfix/checkpoints/best_ema.pt
+Expanded:    runs/vhh_ft/seed42_jfix_expanded/checkpoints/best_ema.pt
+n_repeats:   8  (per-entry forward passes; ELBO is the mean over t/mask noise)
+seed:        42  (same RNG seed for both models -> matched t/mask draws)
+
+UNFILTERED (n=29 shared holdout entries):
+  anchor   ELBO = 0.8487
+  expanded ELBO = 0.8495
+  Delta%       = -0.09%   (Brief 06 SQ1 claim: -13.0%)
+
+FILTERED (n=27, excluding 7q6c_K + 7n9v_J):
+  anchor   ELBO = 0.8262
+  expanded ELBO = 0.8284
+  Delta%       = -0.27%
+
+LEAKAGE EFFECT: +0.18 pp
+  (positive = unfiltered inflated by leakage; negative = leakage hurt unfiltered)
+
+PER-ENTRY for the 2 affected holdout entries:
+  7q6c_K: anchor 1.2994 -> expanded 1.3072, Delta = -0.0077
+  7n9v_J: anchor 1.0042 -> expanded 0.9593, Delta = +0.0449
