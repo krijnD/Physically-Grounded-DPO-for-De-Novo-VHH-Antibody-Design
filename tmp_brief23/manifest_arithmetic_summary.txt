@@ -1,0 +1,21 @@
+Floor manifest:    465 entries
+Expanded manifest: 927 entries
+Added:             462 entries
+Dropped:           0 entries (must be 0; current = 0)
+Overlap floor∩exp: 465 entries
+
+Added entries by source:
+  SAbDab: 126
+  ANDD+SAbDab: 316
+  ANDD: 20
+
+Writer's claim in thesis §3.2.1: 465 + 312 + 130 = 907; actual expanded manifest = 927.
+Writer-side gap: 20 (positive = thesis under-counts; negative = thesis over-counts).
+
+=== LEAKAGE SUMMARY ===
+  n_added_in_shared_cluster        : 3
+  n_added_in_expanded_cluster      : 3
+  n_shared_clusters_contaminated   : 2
+  n_expanded_clusters_contaminated : 2
+  max_pct_id_added_to_shared       : 100.0
+  max_pct_id_added_to_expanded     : 100.0
