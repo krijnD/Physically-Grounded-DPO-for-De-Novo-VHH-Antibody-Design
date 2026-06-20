@@ -1,155 +1,272 @@
 # Physically-Grounded DPO for De Novo VHH Antibody Design
 
-## Project Overview
-
-This project builds a DPO (Direct Preference Optimization) training pipeline for de novo VHH (nanobody) antibody design. The core idea: generative models (IgLM) produce candidate sequences that *look* plausible but may be physically unviable. We construct a **winner/loser preference dataset** by running candidates through a multi-judge pipeline grounded in structural biology, biophysics, and physics. Sequences that fail the judges become **hard negatives** (losers), paired with ground-truth sequences (winners) for DPO training.
+> **MSc Artificial Intelligence thesis — University of Amsterdam**
+> *Diagnosing the Limits of Preference Optimization for In-Silico VHH Antibody Design*
+> Krijn Felipe Dignum · Supervisor: dr. Monica Rotulo · University supervisor: Cong Liu · Examiner: dr. Katja Rogers
 
 ---
 
-## Multi-Judge Pipeline
+## TL;DR
 
-The pipeline follows a **"Fold Once, Judge Many"** architecture. A candidate sequence enters, gets numbered, filtered, folded into a 3D structure, and then evaluated by three independent judges. Each judge produces a verdict (`pass` / `fail`). Any failure makes the sequence a hard negative.
+Structure-based generative models for antibody design produce candidates that pass model-likelihood
+checks but fail **orthogonal physical validation** — the *designability gap*. This thesis tests,
+**entirely in silico**, whether Direct Preference Optimization (DPO) on physically-grounded preference
+pairs narrows that gap for single-domain camelid antibodies (**VHHs / nanobodies**).
+
+The pipeline fine-tunes **DiffAb** on a curated VHH+antigen manifest, mines preference pairs with
+**three orthogonal judges** (biology, biophysics, physics), and trains a **Diffusion-DPO** policy on
+strict-Pareto-dominant (winner, loser) pairs.
+
+**Central finding — a four-axis loss–quality decoupling.** Diffusion-DPO lowers its proxy loss
+(2.7–3.7 %) but moves **no** sample-level quality metric beyond the test-set noise floor — not
+amino-acid recovery (AAR), self-consistency designability (scRMSD), contact-restricted recovery
+(CAAR), or epitope F1. Neither does expanding the fine-tuning manifest (a matched shared-holdout tie,
+Δ ≈ 0). The policy is **position-conservative**: it reproduces the modal training residue most on the
+hypervariable H3 loop. Three sensitivity ablations (a β-sweep, an all-channel decoy variant, and an
+IPO objective) rescue nothing and locate the failure **upstream of DPO**, in the preference signal
+rather than the objective. The contribution is a **diagnostic methodology** that surfaces this
+mechanism while ruling out the obvious methodological explanations.
+
+This repository contains the full pipeline: data curation, reference-policy fine-tuning, the
+three-judge AAPR loop, Diffusion-DPO training, and the field-positioning evaluation stack.
+
+---
+
+## The four-phase pipeline
 
 ```
-                    ┌─────────────────────────────┐
-                    │     Raw VHH Sequence         │
-                    └──────────────┬──────────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │  Phase 1: Kabat Numbering    │
-                    │  (ANARCI / abnumber)         │
-                    └──────────────┬──────────────┘
-                                   │
-                          ┌────────▼────────┐
-                          │  Absolute rules  │
-                          │  (e.g. W47)      │
-                          └───┬─────────┬───┘
-                     fail     │         │  pass / conditional flag
-                              │         │
-                  ┌───────────▼┐   ┌────▼──────────────────┐
-                  │ Hard        │   │ Phase 2: Fold          │
-                  │ Negative    │   │ (NanoBodyBuilder2)     │
-                  └─────────────┘   └────┬─────────────────┘
-                                         │ PDB structure
-                         ┌───────────────┼───────────────┐
-                         │               │               │
-                  ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-                  │  Biology    │ │  Biophysics │ │  Physics    │
-                  │  Judge      │ │  Judge      │ │  Judge      │
-                  │  (SAP)      │ │  (TNP)      │ │  (Rosetta)  │
-                  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-                         │               │               │
-                         └───────────────┼───────────────┘
-                                         │
-                              ┌──────────▼──────────┐
-                              │  Final Verdict       │
-                              │  → Parquet output    │
-                              └─────────────────────┘
+┌─ PHASE 1 ─ Reference-policy fine-tuning ────────┐   ┌─ PHASE 2 ─ AAPR hard-negative mining ───────────────┐
+│  DiffAb codesign_multicdrs.pt                   │   │  For each GT VHH+antigen complex, sample K=8        │
+│  fine-tuned on curated VHH+antigen data,        │   │  candidates from π_ref (mask H1+H2+H3)              │
+│  multi-CDR masking objective.                   │   │       │                                             │
+│   • floor   manifest  =  465 ANDD entries       │   │       ▼  three orthogonal judges                    │
+│   • expanded manifest =  911 ANDD+SAbDab        │   │   Biology · Biophysics (TNP) · Physics (Rosetta)    │
+│                  │                              │   │       │  strict Pareto dominance (winner=GT ≻ loser)│
+│                  └──────────► π_ref ◄───────────┼───┤       │  + reference-margin filter                  │
+└─────────────────────────────────────────────────┘   │       ▼                                             │
+                                                       │   (winner = GT, loser = sample) preference pairs    │
+                                                       └──────────────────────┬──────────────────────────────┘
+                                                                              │
+┌─ PHASE 3 ─ Diffusion-DPO ───────────────────────┐   ┌─ PHASE 4 ─ Field-positioning evaluation ────────────┐
+│  Train π_θ against frozen π_ref on the           │   │  Re-evaluate every checkpoint on:                   │
+│  Pareto pairs.                                   │   │   • AAR + Cα-RMSD          (per-CDR sample metrics)  │
+│   • β = 0.05, sequence-only channel              │──►│   • TNP developability    (Green/Amber/Red zones)   │
+│   • per-residue AbDPO direct-energy loss         │   │   • scRMSD designability  (vs ABodyBuilder2)         │
+│  Ablations: β-sweep · all-channel decoy · IPO    │   │   • CAAR + EpiF1          (ChimeraBench)             │
+└─────────────────────────────────────────────────┘   │   • per-position modal-pick reconciliation          │
+                                                       └─────────────────────────────────────────────────────┘
 ```
 
-### Phase 1 — Sequence Pre-filter
-
-Runs entirely on the 1D amino acid sequence. No folding required.
-
-1. **Kabat numbering** — The raw sequence is aligned to the Kabat scheme using ANARCI (via `abnumber`). This identifies hallmark framework positions.
-2. **Absolute rejection** — If position 47 is Tryptophan (`W47`), the sequence is immediately rejected. The exposed indole ring drives irreversible aggregation.
-3. **Conditional flags** — Non-fatal liabilities that require 3D context to resolve:
-   - `L45` — Loss of gatekeeper electrostatic repulsion (Arg→Leu)
-   - `V37` — Small aliphatic leaves a structural cavity on the former VL interface
-   - `G44` — Loss of Glu solvation shell exposes adjacent hydrophobic atoms
-   - `CDR3 W/F` — Bulky hydrophobes in CDR3 that may nucleate aggregation
-
-Sequences with **no flags** pass the Biology Judge immediately (no folding needed). Sequences with **conditional flags** proceed to Phase 2 for structural resolution.
-
-### Phase 2 — 3D Structure Generation (via TNP)
-
-Non-rejected sequences are folded using **NanoBodyBuilder2** through the **TNP** (Therapeutic Nanobody Profiler) pipeline. TNP serves as both the folder and the biophysics analyzer — it folds the sequence and computes all surface metrics (PSH, PPC, PNC, Compactness, CDR lengths) in a single pass. The resulting PDB is shared across all judges, enforcing the "Fold Once, Judge Many" principle.
-
-### Phase 3 — Multi-Judge Evaluation
-
-Each judge independently evaluates the folded structure and writes its verdict to the candidate record.
+The four methodological commitments that distinguish this work from prior antibody-DPO (AbDPO,
+Zhou et al. 2024) are: **structure-direct generation** (DiffAb emits coordinates, not sequences),
+**three orthogonal judges** over one composite reward, **Pareto-dominant** pair selection over a
+scalarized energy reward, and **Diffusion-DPO** over supervised fine-tuning.
 
 ---
 
-## Biology Judge
+## Phase 1 — Fine-tuning the reference policy on VHH data
 
-**Status: Implemented**
+The DPO reference policy `π_ref` must encode a usable prior over the design space. The published
+AbDPO recipe initializes `π_ref` from DiffAb's `codesign_multicdrs.pt`, pretrained on the
+paired-heavy/light-dominated SAbDab corpus. That prior is weakly specialized for the VHH-specific
+solvent-exposed Framework Region 2 (the YERL hallmark motif), the longer CDR-H3 conformations, and the
+absent inter-domain packing geometry of camelid nanobodies. Phase 1 fine-tunes the upstream checkpoint
+on curated, single-domain VHH data to isolate VHH-specific geometry.
 
-**Purpose:** Determines whether conditional flags from Phase 1 represent real aggregation liabilities by examining the 3D structural context around the flagged residue.
+**Two production manifests, a deliberate data-scale ablation:**
 
-**Method:** Localized Spatial Aggregation Propensity (SAP)
-- Computes Shrake-Rupley SASA (solvent-accessible surface area) over the full structure
-- Uses a K-D tree (`NeighborSearch`) to find all residues within a 10 Å radius of the flagged position
-- Weights each neighbor's SASA by its Kyte-Doolittle hydrophobicity
-- Sums the weighted contributions → **SAP score**
+| Manifest | Entries | Source | Best EMA val neg-ELBO | π_ref role |
+|---|---|---|---|---|
+| **floor** | 465 | ANDD-only (post-DiffAb-cutoff) | 0.7316 | head-to-head comparison baseline |
+| **expanded** | 911 (of 927) | ANDD + SAbDab after cross-source dedup | **0.6363 (−13 %)** | production reference policy |
 
-**Interpretation:**
-- High positive SAP → exposed hydrophobic surface → **aggregation risk** → `fail_conditional`
-- Low/negative SAP → the region is shielded by polar/charged residues (CDR loop rescue) → `pass`
+The expanded manifest reduces the per-model validation negative-ELBO (the diffusion denoising loss;
+lower is better) by **13 %**. Crucially, a standardized re-evaluation of both checkpoints on a shared
+29-entry holdout under identical RNG and masking **ties the two** (Δ ≈ 0): the 13 % is a per-partition
+training statistic, not a generalization win. Both checkpoints feed the downstream head-to-head
+comparison so the only varying factor is the fine-tuning manifest.
 
-**Threshold:** SAP > 150.0 → fail
+**Scope of `π_ref` — multi-CDR masking.** Fine-tuning uses a multi-CDR masking objective (a
+uniformly-random subset of {H1, H2, H3} masked per example) rather than the CDR-H3-only objective used
+in AbDPO. The multi-CDR scope matches the downstream judges: TNP's surface metrics are computed
+globally, the Rosetta repulsion term scores whole-structure interactions, and the Biology Judge's
+framework checks operate outside CDR-H3. (The CDR-H3-only scope is retained as the `seed42_v2`
+ablation.)
 
-**Decision flow:**
-| Condition | Verdict | Needs folding? |
-|-----------|---------|----------------|
-| No flags from Phase 1 | `pass` | No |
-| W47 detected | `fail_absolute` | No |
-| Conditional flag + SAP ≤ 150.0 | `pass` | Yes |
-| Conditional flag + SAP > 150.0 | `fail_conditional` | Yes |
+The five-run diagnostic arc that selected `π_ref` — `seed42` (diverged at Adam cold-start) →
+`seed42_v2` (AbDPO-replication, CDR-H3-only) → `seed42_v3` (multi-CDR) → **`seed42_jfix`** (floor) →
+**`seed42_jfix_expanded`** (expanded production) — is reproduced via `scripts/diffab_ft/`.
 
-**Code:** `src/biology_judge/`
-| File | Role |
-|------|------|
-| `sequence_filter.py` | Phase 1: Kabat numbering, absolute rules, conditional flags |
-| `sap_calculator.py` | Localized SAP computation (SASA + NeighborSearch + hydrophobicity) |
-| `judge.py` | Orchestrator: routes flags to SAP, writes verdict |
-
----
-
-## Biophysics Judge (TNP)
-
-**Status: Implemented**
-
-**Purpose:** Evaluates clinical developability via global surface properties using the [Therapeutic Nanobody Profiler](https://github.com/oxpig/TNP) (Gordon et al.), calibrated against 36 clinical-stage nanobody therapeutics.
-
-**Method:** TNP computes 6 metrics from the folded structure. Three are used for rejection (strict green zone), three are stored for analysis:
-
-| Metric | Safe range | Rejection | Meaning |
-|--------|-----------|-----------|---------|
-| PSH (Patches of Surface Hydrophobicity) | 79.59 – 126.83 | Yes | Too high → aggregation; too low → unfolded |
-| PPC (Positive Patch Charge) | < 0.39 | Yes | Too high → non-specific binding, rapid clearance |
-| Compactness (CDR3 loop geometry) | 0.81 – 1.57 | Yes | Too low → flailing loop; too high → steric strain |
-| PNC (Patches of Negative Charge) | — | No (stored) | Informational |
-| Total CDR Length | — | No (stored) | Informational |
-| CDR3 Length | — | No (stored) | Informational |
-
-**Decision flow:**
-| Condition | Verdict |
-|-----------|---------|
-| PSH outside [79.59, 126.83] | `fail_psh` |
-| PPC > 0.39 | `fail_ppc` |
-| Compactness outside [0.81, 1.57] | `fail_compactness` |
-| All metrics in range | `pass` |
-
-**Code:** `src/biophysics_judge/`
-| File | Role |
-|------|------|
-| `tnp_runner.py` | TNP CLI subprocess execution + JSON/PDB output parsing |
-| `judge.py` | BiophysicsJudge: threshold checks on TNP metrics |
+- **Training:** [`scripts/diffab_ft/train.py`](scripts/diffab_ft/train.py) — thin DiffAb trainer adding EMA shadow weights, early-stop on EMA val ELBO, top-K checkpointing, warmup, W&B logging.
+- **Data prep:** [`scripts/diffab_ft/prepare_manifest.py`](scripts/diffab_ft/prepare_manifest.py), [`clean_manifest.py`](scripts/diffab_ft/clean_manifest.py), [`cluster_split.py`](scripts/diffab_ft/cluster_split.py) — MMseqs2 cluster-based train/val/test splits at 70 % CDR-concatenated identity.
+- **Diagnostics:** [`export_wandb_run.py`](scripts/diffab_ft/export_wandb_run.py) + [`summarize_run.py`](scripts/diffab_ft/summarize_run.py) — export → summarize a finished run into a markdown diagnostic (see [run-diagnostics](#diffab-fine-tune-run-diagnostics) below).
+- **Config:** [`configs/diffab_ft/vhh_ft.yml`](configs/diffab_ft/vhh_ft.yml) (floor), [`vhh_ft_expanded.yml`](configs/diffab_ft/vhh_ft_expanded.yml) (expanded).
 
 ---
 
-## Physics Judge (Rosetta)
+## Phase 2 — AAPR: adversarial hard-negative mining with three judges
 
-**Status: Not yet implemented**
+The **AAPR** (Antigen-Aware Pareto Refinement) loop converts `π_ref` into a stream of (winner, loser)
+preference pairs. For each ground-truth complex it masks H1+H2+H3 and samples **K = 8** candidate
+structures from `π_ref` (210 GT complexes × 8 = 1680 candidates, seed 42). Each candidate is
+side-chain-packed and scored by the three judges in parallel; the GT serves as the candidate winner.
+A candidate the model was confident in but a judge rejected is a **hard negative**.
 
-**Purpose:** Evaluates thermodynamic viability using PyRosetta energy calculations.
+- **Sampling:** [`scripts/aapr/sample_candidates.py`](scripts/aapr/sample_candidates.py) — masks via `MaskMultipleCDRs`, runs DiffAb reverse diffusion on flagged CDR residues only (antigen coordinates preserved end-to-end), writes a `candidates.csv` manifest.
+- **Masking module:** [`src/masking/`](src/masking/) — four strategies (PARATOPE, CDR_FOCUSED for positive candidates; FR2_REVERSION, UNANCHORED_CLASH for hard negatives) with Kabat mapping and anchor/FR2 protection.
 
-**Planned metrics and thresholds:**
-| Metric | Rejection rule | Meaning |
-|--------|---------------|---------|
-| ΔG_bind | > -2.0 REU | Non-binder ("Rock") — thermodynamically inert |
-| E_Rep | > 5.0 REU | Steric clash — atoms overlap in the predicted structure |
+### Judge 1 — Biology (VHH hallmark grammar + localized SAP)
+
+Rejects sequences that violate the VHH-specific hallmark-residue grammar. The absence of a light chain
+in VHHs exposes Framework Region 2 (FR2) to solvent; the **YERL motif** (Tyr/Phe-37, Glu-44, Arg-45,
+Gly/Leu-47, Kabat) compensates. A deterministic ANARCI pass emits flags, resolved by a **localized
+Spatial Aggregation Propensity** check:
+
+- `W47` → **absolute reject** (exposed indole ring drives irreversible aggregation; no 3D analysis).
+- `V37`, `G44`, `L45`, `W99` → **conditional flags**, resolved by SAP_loc on the flagged residue's Cα.
+
+SAP_loc weights each neighbor's Shrake-Rupley SASA (within 10 Å) by Black & Mould normalized
+hydrophobicity, bounded ∈ [−1, +1]. **SAP_loc > 0.15 → fail**; threshold from the aggregation-propensity
+literature (Chennamsetty 2009, Sankar 2018), fixed *before* any AAPR data is generated to avoid
+circularity. On the natural ANDD distribution all four flag-position 80th percentiles are negative, so
+the threshold is correctly dormant and does not over-reject natural VHHs.
+
+**Code:** [`src/biology_judge/`](src/biology_judge/) — `sequence_filter.py` (Kabat numbering + flags),
+`sap_calculator.py` (localized SAP), `judge.py` (orchestrator).
+
+### Judge 2 — Biophysics (Therapeutic Nanobody Profiler)
+
+Evaluates clinical developability via three continuous surface metrics from the
+[Therapeutic Nanobody Profiler (TNP)](https://github.com/oxpig/TNP) (Gordon et al. 2026), calibrated on
+36 clinical-stage nanobody therapeutics. TAP (the paired-antibody profiler) is **not** used: its
+hydrophobicity/charge bands assume a light-chain-shielded FR2 and misclassify viable VHHs.
+
+| Metric | Clinical band | Rejection |
+|---|---|---|
+| **PSH** — Patch of Surface Hydrophobicity | 79.59 – 126.83 Å² | outside band |
+| **PPC** — Positive Patch Charge | < 0.39 | > 0.39 |
+| **CDR3 Compactness** — L_CDR3 / R_max | 0.81 – 1.57 | outside band |
+
+TNP's metric functions are called **directly on the side-chain-packed DiffAb structure** — TNP's CLI
+re-folds the input with NanoBodyBuilder2, but bypassing that preserves the geometry DiffAb actually
+generated (and avoids a 49.6 % NB2 coverage loss observed in a pilot). DiffAb is backbone-only, so a
+deterministic PyRosetta side-chain pack (`RestrictToRepacking`, no design/backbone motion) is inserted
+at sample time to prevent a +58 Å² PSH false-positive inflation.
+
+**Code:** [`src/biophysics_judge/`](src/biophysics_judge/) — `pdb_utils.py` (VHH chain → clean
+monomer), `tnp_direct.py` (score via theraprofnano, no NB2 re-fold), `judge.py` (threshold checks).
+
+### Judge 3 — Physics (Rosetta energy decomposition)
+
+Evaluates thermodynamic viability via Rosetta's `ref2015` all-atom energy, decomposed into a repulsive
+term (clash detector) and a non-repulsive binding-quality term — blocking the two AbDPO-documented
+reward-hacking modes (low-energy non-binders and atom-overlap pseudo-attraction).
+
+| Metric | Rejection | Meaning |
+|---|---|---|
+| **E_Rep** (Lennard-Jones 6-12 repulsive) | > **+3.271 REU** | steric clash / "physical hallucination" |
+| **E_cdr** (per-CDR-residue total energy) | > **+2.844 REU/residue** | weak binder / "rock" |
+
+Thresholds are **empirically calibrated** on the natural VHH distribution following AbDPO's actual
+Appendix E.1 methodology (80th percentile of the Physics scalars on the 465-entry ANDD ground-truth
+set), **not** literature-imported values. A key finding of the calibration: the same corpus yields
+three different 80th-percentile thresholds under three refinement modes (`none`, `pack_cdrs`, `full`)
+spanning ~10 REU/residue — a refinement-regime ambiguity in AbDPO's published thresholds. The operative
+regime is **`refinement_mode=none`** (score what DiffAb actually produced). Under that regime raw DiffAb
+backbones sit orders of magnitude above the threshold, so the Physics judge passes **0 %** of AAPR
+candidates and is non-discriminative — the architecture operationally collapses to two-judge eligibility
+plus single-axis E_Rep ranking.
+
+**Code:** [`src/physics_judge/`](src/physics_judge/) — `rosetta_scorer.py` (PyRosetta wrapper:
+constrained FastRelax, E_Rep, per-residue CDR energy), `judge.py` (thresholds). Calibration:
+[`scripts/calibration/`](scripts/calibration/), thresholds centralized in
+[`src/common/config.py`](src/common/config.py).
+
+### Pair selection — strict Pareto dominance + reference-margin filter
+
+Pairs are selected by **strict Pareto dominance** on the three judges' raw metric vectors
+(PSH-outside-zone, E_cdr, E_Rep) rather than a weighted sum — a candidate cannot game the objective by
+trading off a low-weighted axis. A GT winner `y_w` and AAPR loser `y_l` form a valid pair iff `y_l`
+fails ≥ 1 judge **and** `y_w` strictly Pareto-dominates `y_l`. A second **reference-margin filter** then
+drops pairs that `π_ref` already orders the wrong way (negative `ref_nll_margin`).
+
+| AAPR funnel | Floor | Expanded |
+|---|---|---|
+| Total candidates (210 GT × K=8) | 1680 | 1680 |
+| Biology pass | 99.5 % | 99.5 % |
+| Biophysics pass | 34.8 % | 36.5 % |
+| Physics pass | 0.0 % | 0.0 % |
+| Pareto-accepted pairs | 1492 | 1377 |
+| **After reference-margin filter** | **928** | **809** |
+
+- **Pair selection:** [`scripts/dpo/select_pareto_pairs.py`](scripts/dpo/select_pareto_pairs.py)
+- **Reference-margin filter:** [`scripts/dpo/filter_pairs_by_ref_margin.py`](scripts/dpo/filter_pairs_by_ref_margin.py)
+
+---
+
+## Phase 3 — Diffusion-DPO
+
+Phase 3 trains a policy `π_θ` to prefer GT winners over Pareto-dominated AAPR losers, adapting Direct
+Preference Optimization (Rafailov 2023) to a diffusion model via the per-timestep Diffusion-DPO
+formulation (Wallace 2024) on the energy-decomposed AbDPO loss (Zhou 2024). The implementation departs
+from AbDPO in two ways: strict Pareto dominance over three judges replaces the scalarized reward, and
+the loss is **restricted to the sequence channel** (residue-type logits) — rotation and centroid-position
+channels are held off the DPO gradient.
+
+**Operative configuration:** β = 0.05, sequence-only loss, per-residue (AbDPO Eq. 8) aggregation,
+20 ground-truth validation holdouts at seed 42.
+
+| Pipeline | Val DPO loss | vs iter-1 baseline (~12.48) |
+|---|---|---|
+| floor | 12.02 @ iter 500 | −3.7 % |
+| expanded | 12.15 @ iter 300 | −2.7 % |
+
+- **Trainer:** [`scripts/dpo/train_dpo.py`](scripts/dpo/train_dpo.py) — loads π_θ (trainable) + π_ref (frozen), forks the EMA / early-stop / checkpoint scaffolding from the Phase-1 trainer.
+- **Loss:** [`src/dpo/loss.py`](src/dpo/loss.py) (AbDPO per-residue direct-energy loss), [`src/dpo/dataset.py`](src/dpo/dataset.py) (pair-aware dataset with aligned masks / shapes across winner & loser).
+- **Configs:** [`configs/dpo/vhh_dpo_seqonly_filtered.yml`](configs/dpo/vhh_dpo_seqonly_filtered.yml) and β / channel-scope variants.
+
+### Robustness ablations
+
+| Ablation | Config | Outcome |
+|---|---|---|
+| **β-sweep** | `vhh_dpo_seqonly_filtered_beta0005.yml`, `_beta05.yml` | β ∈ {0.05, 0.5} preserve position-conservative behaviour; **β = 0.005 → 99.7 % Isoleucine-homopolymer collapse** (reward hacking under unbounded low-β). |
+| **All-channel decoy DPO** | [`sample_decoy_winners.py`](scripts/dpo/sample_decoy_winners.py) + `vhh_dpo_allchannel_decoy_t1_*.yml` | Replaces each GT winner with a noise-matched decoy (forward+reverse diffusion to depth t) to dismantle the GT-vs-synthetic shortcut, and activates rot/pos/seq channels. β = 0.005 reaches the **lowest** val loss (10.63) at the **worst** H3 AAR (5.0 %, RMSD ~2600 Å) — an active inverse relationship. |
+| **IPO** | [`src/dpo/loss_ipo.py`](src/dpo/loss_ipo.py) + `vhh_ipo_*.yml` | Bounded squared-margin objective (Azar 2023). β = 0.005 collapses to the **same** Ile-homopolymer as DPO → the failure is in the preference signal, not the log-sigmoid. |
+
+The all-channel diagnostic also localizes the GT-vs-synthetic preference signal: the per-channel
+reference-NLL margin is carried almost entirely by the **rotation (backbone-frame) channel**
+(median +4.4) vs a negligible sequence channel (median +0.2). The sequence-only DPO objective cannot
+access most of the signal — the membership cue is a structural likelihood gap, not a sequence-identity
+one.
+
+---
+
+## Phase 4 — Field-positioning evaluation stack
+
+A re-evaluation of the existing checkpoints (no new fine-tunes, no new DPO) against 2024–2026 SOTA
+evaluation conventions, layering four sample-level axes on top of AAR and Cα-RMSD. For each of the four
+model variants (`π_ref^floor`, `π_θ^floor`, `π_ref^exp`, `π_θ^exp`) it persists K = 4 design samples per
+CDR per test entry (3384 design PDBs total).
+
+| Axis | Metric | Script |
+|---|---|---|
+| Sequence recovery | per-CDR **AAR** + **Cα-RMSD** | [`scripts/diffab_ft/evaluate.py`](scripts/diffab_ft/evaluate.py) |
+| Clinical developability | **TNP** Green/Amber/Red zone occupancy | [`scripts/eval/compute_interface_dG.py`](scripts/eval/compute_interface_dG.py), `build_master_parquet.py` |
+| Self-consistency designability | **scRMSD** < 2 Å vs ABodyBuilder2-predicted backbone | [`scripts/eval/run_scrmsd_array.py`](scripts/eval/run_scrmsd_array.py), `join_scrmsd_into_master.py` |
+| Antigen-contact specificity | **CAAR** (contact-restricted AAR) + **EpiF1** (ChimeraBench) | [`scripts/eval/run_caar_epif1_array.py`](scripts/eval/run_caar_epif1_array.py) |
+| Position-conservatism | per-position **modal-pick** reconciliation | [`scripts/eval/compute_per_position_modal_picks_v2.py`](scripts/eval/compute_per_position_modal_picks_v2.py) |
+
+**Headline results (the four-axis decoupling):**
+
+- **AAR:** every floor→expanded and π_ref→π_θ delta within ±1.2 pp on every CDR — DPO is a sample-level no-op.
+- **TNP developability:** all four variants 37.1–50.1 % Green vs 80.9 % for the natural-VHH calibration; DPO moves zone occupancy by ≤ 1.2 pp.
+- **scRMSD designability:** 17.2–34.0 % across variants/splits; DPO movement within per-entry σ.
+- **CAAR / EpiF1:** max |ΔCAAR| = 4.67 pp, max |ΔEpiF1| = 0.012 — both inside per-entry σ.
+- **Position-conservative learning:** the model matches the GT modal residue at **86 % of H1, 50 % of H2, 28–58 % of H3** positions; the asymmetry tracks training-data density.
+- **Statistics:** n = 29 shared holdout; minimum detectable effect ≈ 9 pp on H3 AAR (α = 0.05, power 0.80). Sub-10-pp DPO effects are not resolvable by this design.
+
+Thesis figure-regeneration scripts: [`scripts/thesis/`](scripts/thesis/),
+[`scripts/dpo/plot_decoy_t_sweep.py`](scripts/dpo/plot_decoy_t_sweep.py).
 
 ---
 
@@ -157,99 +274,104 @@ Each judge independently evaluates the folded structure and writes its verdict t
 
 ### 1. ANDD (Antibody and Nanobody Design Dataset)
 
-**Source:** [Zenodo – ANDD_pdb.zip](https://zenodo.org/records/18151718/files/ANDD_pdb.zip?download=1)
+**Source:** [Zenodo – ANDD_pdb.zip](https://zenodo.org/records/18151718/files/ANDD_pdb.zip?download=1) ·
 **Metadata:** `Antibody and Nanobody Design Dataset (ANDD)_v2.xlsx`
-**Location:** `/projects/0/hpmlprjs/interns/krijn/ANDD_nano_dataset_IgLM/`
 
-#### Filtering (`data scripts/filter_andd_vhh.py`)
-
-Starting from the full ANDD Excel file, the following filters were applied:
-
-1. **VHH/Nanobody only** — rows where `Ab_or_Nano == 'Nanobody/VHH'`
-2. **Split by structure availability** — separated on whether `PDB_ID` is present (non-null)
-
-#### Resulting files
+Starting from the full ANDD Excel, the filters keep `Ab_or_Nano == 'Nanobody/VHH'` and split by
+structure availability:
 
 | File | Sequences | Description |
 |---|---|---|
-| `ANDD_VHH_only.csv` | 30,119 | All VHH sequences (full filtered set) |
+| `ANDD_VHH_only.csv` | 30,119 | All VHH sequences |
 | `ANDD_VHH_with_structure.csv` | 3,178 | VHH sequences with a known PDB structure |
-| `ANDD_VHH_no_structure.csv` | 26,941 | VHH sequences without a structure (require ESMfold) |
+| `ANDD_VHH_no_structure.csv` | 26,941 | VHH sequences without a structure |
 
-#### `Predicted_or_Not` audit
-
-ANDD v2's `Predicted_or_Not` column has three values: `real`, `predicted`, and `\` (a backslash used as an "unlabelled" sentinel). Among the 3,178 VHH rows with a `PDB_ID`:
-
-| Label | Rows | Unique PDBs | Status |
-|---|---|---|---|
-| `real` | 1,188 | 728 | Experimentally determined — keep |
-| `\` (unlabelled) | 1,911 | 1,014 | Mostly real, just unlabelled — keep |
-| `predicted` | 79 | 6 | Model-generated — exclude |
-
-Naïvely filtering `Predicted_or_Not == "real"` drops **571 real PDBs** that are only labelled `\`. We verified this against RCSB: of the 571 recovered IDs, **559 resolve as current PDB entries** and **12 are obsoleted** (each replaced by a superseding ID). Zero were hallucinated / generative IDs. `fetch_deposition_dates.py` therefore keeps any row whose label is not explicitly `predicted` — non-RCSB IDs are then auto-dropped by the RCSB query itself (no `initial_release_date` → no post-cutoff flag). The 1 `predicted`-only PDB and the 12 obsoletions are excluded by this layered check.
-
-Net effect: the pool of candidate PDBs entering the DiffAb pipeline is **1,287** verified-real VHH structures (vs. 728 with the naïve filter).
-
-#### PDB structures
+**`Predicted_or_Not` audit.** ANDD v2's label column has three values: `real`, `predicted`, and `\`
+(an unlabelled sentinel). Naïvely filtering `== "real"` drops **571 real PDBs** that are only labelled
+`\`. Verified against RCSB: 559 resolve as current entries, 12 are obsoleted, zero are hallucinated. The
+contamination check therefore keeps any row whose label is not explicitly `predicted`. Net candidate
+pool entering DiffAb: **1,287** verified-real VHH structures (vs. 728 with the naïve filter).
 
 | Directory | PDB files | Description |
 |---|---|---|
 | `All_structures/` | 8,214 | All structures from the ANDD bulk download |
-| `VHH_structures/` | 1,261 | VHH-only structures copied from `All_structures/` |
-| `VHH_structures_post_iglm/` | — | Subset deposited after the IgLM training cutoff (2022-01-01) |
-| `VHH_structures_post_diffab/` | — | Subset deposited after the DiffAb training cutoff (2021-12-25) |
-
----
+| `VHH_structures/` | 1,261 | VHH-only structures |
+| `VHH_structures_post_iglm/` | — | Subset deposited after the IgLM cutoff (2022-01-01) |
+| `VHH_structures_post_diffab/` | — | Subset deposited after the DiffAb cutoff (2021-12-25) |
 
 ### 2. SAbDab Nanobody Dataset
 
 **Source:** [SAbDab nanobody summary](https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/)
-**Location:** `/projects/0/hpmlprjs/interns/krijn/sabdab_nano_dataset_IgLM/`
 
-#### Filtering (`data scripts/fetch_nano.py`)
+Starting from `sabdab_nano_summary.tsv` (2,422 entries), filters: **post-IgLM cutoff** (`date >=
+2023-01-01`) and **high resolution** (`resolution <= 2.5 Å`, required for reliable PyRosetta E_Rep) →
+**38 PDB files** downloaded from RCSB.
 
-Starting from `sabdab_nano_summary.tsv` (2,422 entries), the following filters were applied:
+### Data-contamination check & curation (3-step)
 
-1. **Post-IgLM training cutoff** — `date >= 2023-01-01` (ensures no data leakage into IgLM training data)
-2. **High resolution** — `resolution <= 2.5 Å` (required for reliable PyRosetta `E_Rep` energy evaluation)
+When fine-tuning a generative model, structures deposited before the model's training cutoff may have
+been seen during training and are unsuitable as ground-truth winners.
 
-#### Resulting files
+1. **[`fetch_deposition_dates.py`](data%20scripts/fetch_deposition_dates.py)** — queries RCSB for each
+   PDB's `initial_release_date` (the ANDD `Update_Date` column is unreliable) and flags entries
+   deposited after the cutoff. Cutoffs: **IgLM 2022-01-01**, **DiffAb 2021-12-25**.
+2. **[`subset_vhh_structures.py`](data%20scripts/subset_vhh_structures.py)** — copies
+   contamination-safe PDBs into a clean subset directory and produces a filtered metadata CSV.
+3. **[`curate_andd.py`](data%20scripts/curate_andd.py)** — geometry-verifies each entry's VHH chain
+   (ANARCI) and antigen chain(s) via contact geometry, overwriting the chain columns with
+   structure-verified values. Notable fixes: a relaxed J-motif regex `[WRK]G[x]GT` (recovers complete
+   VHH domains with a known-rare W→R/K FR4 substitution), comma-separated homodimer chain parsing, and
+   exclusion of *all* VH-type chains from antigen scoring (prevents VHH-VHH / VHH-Fab mislabelling).
+   Yield on the 561-row post-DiffAb slice: 465 curated, 36 `no_vhh`, 32 `ambiguous_vhh`, 28 `no_antigen`.
 
-| Resource | Count | Description |
-|---|---|---|
-| `sabdab_nano_summary.tsv` | 2,422 entries | Full SAbDab nanobody summary (raw download) |
-| `filtered_vhh_pdbs/` | 38 PDB files | Structures passing both filters, downloaded from RCSB |
+`diagnose_rejections.py` classifies why each rejected row failed; it informed the J-motif and homodimer
+fixes above.
 
 ---
 
-## Project Structure
+## Repository structure
 
 ```
 src/
-├── common/
-│   ├── candidate.py        # NanobodyCandidate dataclass — shared across all judges
-│   ├── config.py            # Centralized thresholds for all judges
-│   └── pdb_utils.py         # PDB loading via Biopython
-├── biology_judge/
-│   ├── sequence_filter.py   # Phase 1: Kabat numbering + flag assignment
-│   ├── sap_calculator.py    # Localized SAP computation
-│   └── judge.py             # Biology Judge orchestrator
-├── biophysics_judge/
-│   ├── tnp_runner.py        # TNP CLI subprocess + JSON/PDB output parsing
-│   └── judge.py             # BiophysicsJudge: threshold checks on TNP metrics
-├── physics_judge/           # Placeholder
-└── pipeline.py              # Top-level orchestrator: filter → TNP fold → judge → Parquet
-data/
-├── structures/              # PDB files keyed by candidate_id
-├── datasets/                # Input CSVs (ANDD, SAbDab)
-└── results/                 # judge_verdicts.parquet (output)
+├── common/              # NanobodyCandidate dataclass, centralized thresholds, PDB utils, SAbDab loader
+├── masking/             # AAPR masking: 4 strategies, Kabat mapper, paratope detector, engine
+├── biology_judge/       # YERL hallmark grammar + localized SAP
+├── biophysics_judge/    # TNP (PSH/PPC/Compactness) scored directly on DiffAb geometry
+├── physics_judge/       # Rosetta ref2015 energy decomposition (E_Rep, E_cdr)
+├── dpo/                 # Diffusion-DPO loss (AbDPO per-residue), IPO variant, pair-aware dataset
+├── diffab_ft/           # Fine-tune support package
+└── pipeline.py          # Multi-judge orchestrator: score one geometry, judge many → Parquet
+
+scripts/
+├── diffab_ft/           # Phase 1: data prep, cluster splits, trainer, W&B export/summarize
+├── aapr/                # Phase 2: candidate sampling from π_ref
+├── calibration/         # Phase 2: percentile threshold calibration
+├── judges/              # Phase 2: refinement-mode pilots
+├── dpo/                 # Phase 3: Pareto selection, ref-margin filter, decoy winners, DPO trainer, diagnostics
+├── eval/                # Phase 4: scRMSD, CAAR/EpiF1, modal-pick, master-parquet assembly
+├── thesis/              # Figure regeneration
+├── analysis/            # Leakage / holdout audits
+└── test_sabdab_judges.py  # End-to-end judge sanity test on SAbDab crystals
+
+data scripts/            # ANDD/SAbDab download, filtering, contamination check, curation
+configs/                 # YAML run configs (diffab_ft/, dpo/)
+docs/                    # Research briefs, handoffs, calibration rationale
+third_party/diffab/      # DiffAb submodule (luost26/diffab)
 ```
 
 ---
 
 ## Setup (Snellius)
 
-### 1. Create Python virtual environment
+### 1. Clone with submodule
+
+```bash
+git clone --recurse-submodules https://github.com/krijnD/Physically-Grounded-DPO-for-De-Novo-VHH-Antibody-Design.git
+# or, if already cloned:
+git submodule update --init --recursive
+```
+
+### 2. Python virtual environment
 
 ```bash
 module purge
@@ -261,78 +383,48 @@ source /projects/0/hpmlprjs/interns/krijn/venvs/DPO/bin/activate
 pip install --upgrade pip
 ```
 
-### 2. Install TNP (Therapeutic Nanobody Profiler)
+### 3. Install TNP (Therapeutic Nanobody Profiler) — Python package only
 
-TNP handles both NanoBodyBuilder2 folding and biophysics metric computation.
+The pipeline uses `theraprofnano`'s metric functions (PSH, PPC, PNC, Compactness, CDR lengths)
+directly on the DiffAb-generated structure. The TNP CLI and its NanoBodyBuilder2 fold-back are **not**
+used.
 
 ```bash
 cd /projects/0/hpmlprjs/interns/krijn/tools/
-git clone https://github.com/oxpig/TNP.git
-cd TNP
-pip install .
+git clone https://github.com/oxpig/TNP.git && cd TNP && pip install .
 
-# Verify
-which TNP
-TNP --help
+python -c "
+from theraprofnano.CDR_Profiler.CDR3_Conf_Assigner import main_compactness
+from theraprofnano.Hydrophobicity_and_Charge_Profiler.Hydrophobicity_and_Charge_Assigner import CreateAnnotation
+print('OK')"
 ```
 
-### 3. Install ImmuneBuilder (NanoBodyBuilder2)
+### 4. Install DSSP (required by theraprofnano `CreateAnnotation`)
 
-TNP calls NanoBodyBuilder2 (from ImmuneBuilder) for structure prediction,
-but `pip install .` for TNP does **not** pull it in automatically.
-
-```bash
-pip install ImmuneBuilder
-
-# ImmuneBuilder requires OpenMM + pdbfixer (not on PyPI — install separately)
-pip install openmm pdbfixer
-
-# If pip install openmm fails, install pdbfixer from source:
-#   pip install git+https://github.com/openmm/pdbfixer.git
-
-# Verify
-python -c "from ImmuneBuilder import NanoBodyBuilder2; print('OK')"
-```
-
-> **Note:** The first prediction will download model weights (~200 MB).
-
-### 4. Install DSSP (required by TNP)
-
-DSSP must be built from source on Snellius. It requires GCC 13+ (C++20) and a recent SQLite (the system SQLite is too old), both built into the venv.
+DSSP must be built from source on Snellius (needs GCC 13+ / C++20 and a recent SQLite, both built into
+the venv).
 
 ```bash
-# Load the compiler (GCC 13.3.0 — must match the Python toolchain)
-module purge
-module load 2024
-module load GCCcore/13.3.0
+module purge && module load 2024 && module load GCCcore/13.3.0
 
-# 4a. Build SQLite from source (Snellius system version is too old for DSSP)
+# 4a. Build SQLite from source (system version is too old for DSSP)
 cd /projects/0/hpmlprjs/interns/krijn/tools/
 wget https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz
-tar xzf sqlite-autoconf-3460000.tar.gz
-cd sqlite-autoconf-3460000
-./configure --prefix=$VIRTUAL_ENV
-make
-make install
+tar xzf sqlite-autoconf-3460000.tar.gz && cd sqlite-autoconf-3460000
+./configure --prefix=$VIRTUAL_ENV && make && make install
 
-# 4b. Clone and build DSSP, pointing to the venv's SQLite
+# 4b. Clone and build DSSP against the venv's SQLite
 cd /projects/0/hpmlprjs/interns/krijn/tools/
-git clone https://github.com/PDB-REDO/dssp.git
-cd dssp
+git clone https://github.com/PDB-REDO/dssp.git && cd dssp
 cmake -S . -B build \
-  -DCMAKE_INSTALL_PREFIX=$VIRTUAL_ENV \
-  -DCMAKE_PREFIX_PATH=$VIRTUAL_ENV \
+  -DCMAKE_INSTALL_PREFIX=$VIRTUAL_ENV -DCMAKE_PREFIX_PATH=$VIRTUAL_ENV \
   -DSQLite3_INCLUDE_DIR=$VIRTUAL_ENV/include \
   -DSQLite3_LIBRARY=$VIRTUAL_ENV/lib/libsqlite3.so
-cmake --build build
-cmake --install build
-
-# Verify
-which mkdssp
+cmake --build build && cmake --install build
 mkdssp --version
 ```
 
-### 5. Install PyRosetta (for Physics Judge — future)
+### 5. Install PyRosetta (Physics Judge + side-chain packing)
 
 ```bash
 pip install pyrosetta \
@@ -342,307 +434,101 @@ pip install pyrosetta \
 ### 6. Download datasets
 
 ```bash
-# ANDD dataset
 wget -O ANDD_pdb.zip "https://zenodo.org/records/18151718/files/ANDD_pdb.zip?download=1"
-
-# SAbDab nanobody summary
 wget https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/nanobody/ -O sabdab_nano_summary.tsv
 ```
 
 ---
 
-## Scripts
+## Reproducing the pipeline
 
-| Script | Description |
-|---|---|
-| `data scripts/fetch_nano.py` | Downloads post-2023, high-resolution (≤2.5 Å) VHH structures from SAbDab/RCSB |
-| `data scripts/filter_andd_vhh.py` | Filters ANDD Excel for VHH sequences and splits by structure availability |
-| `data scripts/fetch_deposition_dates.py` | Fetches original RCSB deposition dates for real PDB structures and flags entries safe from training data contamination |
-| `data scripts/subset_vhh_structures.py` | Copies post-cutoff PDB files into a clean subset directory and produces a filtered metadata CSV |
-| `data scripts/curate_andd.py` | Geometry-verifies each ANDD entry's VHH chain and antigen chain(s), overwrites the chain columns with structure-verified values, and rejects entries that fail ANARCI / contact-geometry checks |
-| `data scripts/diagnose_rejections.py` | Classifies why each `ANDD_VHH_rejected_*.csv` row was rejected (which filter stage, whether a looser rule would recover it) — informed the J-motif and homodimer fixes in `curate_andd.py` |
-| `scripts/test_sabdab_judges.py` | End-to-end sanity test of all three judges on SAbDab ground-truth nanobody structures |
-| `scripts/diffab_ft/export_wandb_run.py` | Reads a finished W&B run's history (locally from the `.wandb` log file, or from wandb.ai if the local dir is gone) and writes one panel-format CSV per metric. Companion to `summarize_run.py`. No manual "Export panel data" clicking, no laptop round-trip |
-| `scripts/diffab_ft/summarize_run.py` | Reduces a W&B export directory of a DiffAb fine-tune run to a compact markdown diagnostic (warmup detection, per-phase train-loss / grad-norm stats, val trajectory, best-val landmark). Stdlib-only |
+```bash
+# ── Phase 1: fine-tune the reference policy ──────────────────────────────
+python scripts/diffab_ft/prepare_manifest.py   # build curated manifest
+python scripts/diffab_ft/cluster_split.py       # MMseqs2 70% cluster splits
+python scripts/diffab_ft/train.py --config configs/diffab_ft/vhh_ft_expanded.yml
+python scripts/diffab_ft/export_wandb_run.py  runs/vhh_ft/seed42_jfix_expanded --out-dir .../wandb_export
+python scripts/diffab_ft/summarize_run.py     .../wandb_export --out diagnostic.md
+
+# ── Phase 2: AAPR hard-negative mining ───────────────────────────────────
+python scripts/aapr/sample_candidates.py        # sample K=8 losers per GT from π_ref
+python scripts/test_sabdab_judges.py --csv ANDD_VHH_with_structure.csv \
+    --pdb-dir VHH_structures_post_diffab --score-biophysics --output candidates_scored.parquet
+python scripts/dpo/select_pareto_pairs.py        # strict Pareto-dominant (y_w, y_l) pairs
+python scripts/dpo/filter_pairs_by_ref_margin.py # drop pairs π_ref orders the wrong way
+
+# ── Phase 3: Diffusion-DPO ───────────────────────────────────────────────
+python scripts/dpo/train_dpo.py --config configs/dpo/vhh_dpo_seqonly_filtered.yml
+
+# ── Phase 4: field-positioning evaluation ────────────────────────────────
+python scripts/eval/build_design_manifest.py
+python scripts/eval/run_scrmsd_array.py
+python scripts/eval/run_caar_epif1_array.py
+python scripts/eval/compute_per_position_modal_picks_v2.py
+python scripts/eval/build_master_parquet.py      # assemble all axes into one parquet
+```
+
+Most compute steps run on Snellius via `sbatch` wrappers under each `scripts/*/slurm/` directory
+(single NVIDIA A100 for sampling / training, CPU `rome` partition for PyRosetta + TNP scoring).
+
+---
+
+### DiffAb fine-tune run diagnostics
+
+Standard workflow after a run finishes: **export → summarize**. Both scripts run wherever the training
+venv lives — no web-UI clicking, no laptop round-trip.
+
+```bash
+# 1) Read the run's W&B history from disk → per-metric CSVs
+python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_jfix_expanded \
+  --out-dir runs/vhh_ft/seed42_jfix_expanded/wandb_export --include train/ val/
+
+# 2) Reduce to a ~30-line markdown diagnostic (warmup detection, per-phase loss/grad-norm stats,
+#    full val trajectory, best-val landmark). Stdlib-only.
+python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_jfix_expanded/wandb_export \
+  --compare-to runs/vhh_ft/seed42_jfix/wandb_export --out diagnostic.md
+```
+
+`export_wandb_run.py` auto-detects local mode (parses the binary `.wandb` log; works for online and
+offline runs) vs cloud mode (any `wandb.ai` URL or `entity/project/run_id`).
 
 ### Testing the judges (`scripts/test_sabdab_judges.py`)
 
-Runs the full pipeline (Phase 1 sequence filter → optional TNP folding → all three judges) on real crystal structures. Results are written to a Parquet file with per-candidate verdicts.
-
-The script supports three input modes depending on which dataset you are testing:
-
-#### Mode 1 — SAbDab (TSV metadata)
+Runs the full multi-judge pipeline on real crystal structures. Three input modes:
 
 ```bash
-BASE=/projects/0/hpmlprjs/interns/krijn
-SABDAB="$BASE/sabdab_nano_dataset_IgLM"
+# Mode 1 — SAbDab (TSV metadata)
+python scripts/test_sabdab_judges.py --tsv sabdab_nano_summary.tsv \
+  --pdb-dir filtered_vhh_pdbs --output data/results/sabdab_judge_test.parquet --score-biophysics
 
-# Quick test — no TNP folding
-python scripts/test_sabdab_judges.py \
-  --tsv "$SABDAB/sabdab_nano_summary.tsv" \
-  --pdb-dir "$SABDAB/filtered_vhh_pdbs" \
-  --output data/results/sabdab_judge_test.parquet \
-  --limit 5
+# Mode 2 — ANDD (CSV metadata; chains read automatically)
+python scripts/test_sabdab_judges.py --csv ANDD_VHH_with_structure.csv \
+  --pdb-dir VHH_structures_post_iglm --output data/results/andd_judge_test.parquet --score-biophysics
 
-# Full test — all judges including biophysics via TNP
-python scripts/test_sabdab_judges.py \
-  --tsv "$SABDAB/sabdab_nano_summary.tsv" \
-  --pdb-dir "$SABDAB/filtered_vhh_pdbs" \
-  --output data/results/sabdab_judge_test.parquet \
-  --run-tnp --ncores 4
+# Mode 3 — plain PDB directory (chains specified manually)
+python scripts/test_sabdab_judges.py --pdb-dir /path/to/pdbs \
+  --chain A --antigen-chain B --output data/results/custom_judge_test.parquet --score-biophysics
 ```
-
-#### Mode 2 — ANDD (CSV metadata)
-
-Chain IDs, antigen chains, and sequences are read automatically from the ANDD CSV. No manual chain specification needed.
-
-```bash
-BASE=/projects/0/hpmlprjs/interns/krijn
-ANDD="$BASE/ANDD_nano_dataset_IgLM"
-
-# Quick test — first 10 entries
-python scripts/test_sabdab_judges.py \
-  --csv "$ANDD/ANDD_VHH_with_structure.csv" \
-  --pdb-dir "$ANDD/VHH_structures_post_iglm" \
-  --output data/results/andd_judge_test.parquet \
-  --limit 10
-
-# Full test — all judges including biophysics via TNP
-python scripts/test_sabdab_judges.py \
-  --csv "$ANDD/ANDD_VHH_with_structure.csv" \
-  --pdb-dir "$ANDD/VHH_structures_post_iglm" \
-  --output data/results/andd_judge_test.parquet \
-  --run-tnp --ncores 4
-```
-
-#### Mode 3 — Plain PDB directory (no metadata file)
-
-Use when you have a folder of PDB files with no accompanying metadata. Chain IDs must be specified manually. The Physics Judge is skipped if `--antigen-chain` is omitted.
-
-```bash
-python scripts/test_sabdab_judges.py \
-  --pdb-dir /path/to/pdbs \
-  --chain A --antigen-chain B \
-  --output data/results/custom_judge_test.parquet \
-  --run-tnp --ncores 4
-```
-
-#### All flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--tsv` | — | Path to `sabdab_nano_summary.tsv` (SAbDab mode) |
-| `--csv` | — | Path to `ANDD_VHH_with_structure.csv` (ANDD mode) |
+| `--tsv` / `--csv` | — | SAbDab TSV / ANDD CSV metadata (mutually exclusive with plain mode) |
 | `--pdb-dir` | *(required)* | Directory containing PDB files |
 | `--output` | `data/results/sabdab_judge_test.parquet` | Output Parquet path |
 | `--limit` | — | Process only first N entries (quick sanity check) |
-| `--run-tnp` | off | Enable TNP folding + Biophysics Judge |
-| `--ncores` | `1` | CPU cores for TNP folding |
-| `--chain` | `A` | Nanobody chain ID (plain PDB directory mode only) |
-| `--antigen-chain` | — | Antigen chain ID (plain PDB directory mode only) |
+| `--score-biophysics` (alias `--run-tnp`) | off | Score PSH/PPC/PNC/Compactness on each PDB's VHH chain; enables the Biophysics Judge |
+| `--chain` / `--antigen-chain` | `A` / — | Chain IDs (plain PDB directory mode only) |
 
 ---
 
-### DiffAb fine-tune run diagnostics (two-step pipeline)
+## Key references
 
-Standard workflow after a fine-tune run finishes: **export → summarize**. Both scripts run wherever the training venv lives — typically on the same compute / login node that did the training. No web UI clicking, no laptop round-trip.
+- **DiffAb** — Luo et al., *Antigen-Specific Antibody Design with Diffusion Models*, NeurIPS 2022 (upstream backbone)
+- **AbDPO** — Zhou et al., *Antigen-Specific Antibody Design via Direct Energy-based Preference Optimization*, NeurIPS 2024 (closest prior work)
+- **Diffusion-DPO** — Wallace et al., *Diffusion Model Alignment Using DPO*, CVPR 2024
+- **DPO** — Rafailov et al., *Direct Preference Optimization*, NeurIPS 2023 · **IPO** — Azar et al., 2023
+- **TNP** — Gordon et al., *Characterising nanobody developability*, Commun. Biol. 2026 · **ChimeraBench** — Ahmed et al., 2026
+- **VHH hallmark residues** — Uto et al. 2025; Vincke et al. 2009 · **SAP** — Chennamsetty et al. 2009
+- **Rosetta ref2015** — Alford et al. 2017 · **PyRosetta** — Chaudhury et al. 2010
 
-```bash
-# 1) Read the run's history from disk → CSVs
-python scripts/diffab_ft/export_wandb_run.py \
-    runs/vhh_ft/seed42_v2 \
-    --out-dir runs/vhh_ft/seed42_v2/wandb_export
-
-# 2) Summarize → markdown diagnostic
-python scripts/diffab_ft/summarize_run.py \
-    runs/vhh_ft/seed42_v2/wandb_export \
-    --out runs/vhh_ft/seed42_v2/diagnostic.md
-
-# 3) Read / share the report
-cat runs/vhh_ft/seed42_v2/diagnostic.md
-```
-
-#### Step 1 — `export_wandb_run.py`
-
-Reads a finished W&B run's full step-by-step history (no downsampling) and writes one CSV per metric in panel-export format. Two modes, auto-detected from the argument:
-
-- **Local mode (default for any path that exists on disk):** parses the binary `.wandb` log file that `wandb` writes alongside every run. No network needed. Works for both online and offline runs — the binary is present either way. The path can point at the run output dir (e.g. `runs/vhh_ft/seed42_v2`), the `wandb/` subdir, a specific `run-<id>/` dir or `latest-run` symlink, or the `.wandb` file directly. The script walks down to find the binary automatically.
-- **Cloud mode (any non-path):** uses `wandb.Api()` to fetch history from wandb.ai. Useful only when the local run dir is gone. Authentication uses whatever `wandb` already has (`~/.netrc` / `WANDB_API_KEY` / `wandb login`).
-
-```bash
-# Local mode (typical): point at the run output dir
-python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
-  --out-dir runs/vhh_ft/seed42_v2/wandb_export
-
-# Restrict to train/* and val/* (skip W&B internals + custom non-numeric)
-python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
-  --out-dir runs/vhh_ft/seed42_v2/wandb_export \
-  --include train/ val/
-
-# Cloud mode: pass a wandb.ai URL or 'entity/project/run_id'
-python scripts/diffab_ft/export_wandb_run.py \
-  https://wandb.ai/<entity>/vhh-diffab-ft/runs/<run_id> \
-  --out-dir /tmp/old_run_export
-
-# Override the column-header label (defaults to the run dir name)
-python scripts/diffab_ft/export_wandb_run.py runs/vhh_ft/seed42_v2 \
-  --out-dir runs/vhh_ft/seed42_v2/wandb_export \
-  --run-label seed42_v2
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `source` | *(required)* | Local path (run dir, wandb/ subdir, run-`<id>`/, or `.wandb` file) **or** wandb.ai URL **or** `entity/project/run_id` |
-| `--out-dir` | *(required)* | Directory to write per-metric CSVs into (created if needed) |
-| `--run-label` | run-dir name | String used in CSV column headers (`<label> - <metric>`) |
-| `--include` | all | Only export metrics whose key starts with any of these prefixes (e.g. `train/ val/`) |
-| `--exclude` | none | Exclude metrics whose key starts with any of these prefixes |
-
-#### Step 2 — `summarize_run.py`
-
-Reduces an export directory to a ~30-line markdown diagnostic suitable for thesis appendices, run-to-run comparison, or pasting into a chat for review. Stdlib-only — no install step.
-
-**What it reports:**
-- **Warmup ramp detection** — finds the iter at which `train/lr` plateaued, so post-warmup statistics are reported separately from warmup. Critical because the first ~1000 iters of a fine-tune have very different gradient/loss dynamics than steady state.
-- **Per-phase percentiles + slopes** for `train/loss` and `train/grad_norm`. Slope/1k captures whether train loss is drifting up (bad) or down (good); percentiles flag spikes hidden by means.
-- **Full val trajectory table** including per-component breakdowns (`val/loss_rot`, `loss_pos`, `loss_seq`).
-- **Best-val landmark + termination iter**, so "killed early vs converged vs diverged" is unambiguous.
-
-```bash
-# Single run
-python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/
-
-# Side-by-side with a previous run (also uses export_wandb_run.py output)
-python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
-  --compare-to runs/vhh_ft/seed42/wandb_export/
-
-# Save report to a file (e.g. for thesis appendix)
-python scripts/diffab_ft/summarize_run.py runs/vhh_ft/seed42_v2/wandb_export/ \
-  --out runs/vhh_ft/seed42_v2/diagnostic.md
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `input_dir` | *(required)* | Directory of panel-format CSVs (output of `export_wandb_run.py` or W&B's web "Export panel data") |
-| `--compare-to` | — | Optional second directory; appended below the primary report for side-by-side comparison |
-| `--out` | stdout | Write the markdown report to this file instead of stdout |
-
----
-
-## Data Contamination Check
-
-When fine-tuning a generative model, structures that were deposited before the model's training data cutoff may have been seen during training, making them unsuitable as ground-truth winners.
-
-`data scripts/fetch_deposition_dates.py` handles this by querying the RCSB PDB GraphQL API for the `initial_release_date` of each structure (the `Update_Date` column in the ANDD CSV is unreliable — it reflects the last modification, not the original deposition, and is missing for ~47% of entries).
-
-### Step 1 — `fetch_deposition_dates.py`
-
-Queries RCSB for each PDB's `initial_release_date` and writes a CSV flagging which entries are safe (deposited after the model's training cutoff). Rows with `Predicted_or_Not == "predicted"` are excluded; `real` and `\` (unlabelled) rows are both kept, and any PDB_ID not in RCSB (e.g. obsoletions) is dropped automatically when its date query returns no result. See the `Predicted_or_Not` audit above for the rationale.
-
-```bash
-python "data scripts/fetch_deposition_dates.py" \
-  --input  /path/to/ANDD_VHH_with_structure.csv \
-  --cutoff 2021-12-25 \
-  --label  post_diffab \
-  --output /path/to/andd_real_deposition_dates_diffab.csv
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--input` | *(required)* | CSV with `PDB_ID` and `Predicted_or_Not` columns |
-| `--cutoff` | `2022-01-01` | Training data cutoff of the model being fine-tuned |
-| `--label` | `post_cutoff` | Name of the boolean flag column in the output |
-| `--output` | `andd_real_deposition_dates.csv` next to `--input` | Output CSV path (override to avoid overwriting existing runs) |
-
-**Output:** CSV with columns `pdb_id`, `deposition_date`, and `<label>` (True = safe to use).
-
-**Cutoff rationale:**
-| Model | Cutoff | Rationale |
-|---|---|---|
-| IgLM | `2022-01-01` | IgLM preprint December 2021; trained on OAS snapshot mid-2021. `2022-01-01` is the conservative safe boundary. |
-| DiffAb | `2021-12-25` | DiffAb trained on SAbDab structures deposited before 2021-12-24 (NeurIPS 2022). |
-
----
-
-### Step 2 — `subset_vhh_structures.py`
-
-Uses the deposition dates CSV to copy contamination-safe PDB files into a new directory and produce a filtered metadata CSV.
-
-```bash
-python "data scripts/subset_vhh_structures.py" \
-  --dates-csv      /path/to/andd_real_deposition_dates_diffab.csv \
-  --structures-dir /path/to/VHH_structures \
-  --output-dir     /path/to/VHH_structures_post_diffab \
-  --metadata-csv   /path/to/ANDD_VHH_with_structure.csv \
-  --output-csv     /path/to/ANDD_VHH_with_structure_post_diffab.csv \
-  --label          post_diffab
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--dates-csv` | *(required)* | Output CSV from `fetch_deposition_dates.py` |
-| `--structures-dir` | *(required)* | Source directory with all VHH PDB files |
-| `--output-dir` | *(required)* | Directory to copy safe PDB files into (created if needed) |
-| `--metadata-csv` | — | (Optional) Original metadata CSV to also filter |
-| `--output-csv` | `ANDD_VHH_with_structure_post_cutoff.csv` next to `--metadata-csv` | Output path for filtered metadata CSV |
-| `--label` | `post_iglm` | Boolean column in dates CSV to filter on |
-
-**Output:** filtered PDB directory + (optionally) a filtered metadata CSV ready for `curate_andd.py`.
-
----
-
-### Step 3 — `curate_andd.py`
-
-Verifies each ANDD entry against PDB geometry and writes a curated CSV whose `H_Chain Auth Asym ID` and `Ag_Auth Asym ID` columns are replaced with structure-verified values. Entries that can't be verified go to a rejected CSV.
-
-```bash
-python "data scripts/curate_andd.py" \
-  --input-csv    /path/to/ANDD_VHH_with_structure_post_diffab.csv \
-  --pdb-dir      /path/to/VHH_structures_post_diffab \
-  --output-csv   /path/to/ANDD_VHH_curated_diffab.csv \
-  --rejected-csv /path/to/ANDD_VHH_rejected_diffab.csv \
-  --overwrite-output
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--input-csv` | *(required)* | ANDD CSV with `PDB_ID`, chain and sequence columns |
-| `--pdb-dir` | *(required)* | Directory of PDB files (output of `subset_vhh_structures.py`) |
-| `--output-csv` | *(required)* | Path for curated CSV (must differ from `--input-csv`) |
-| `--rejected-csv` | *(required)* | Path for rejected CSV |
-| `--contact-cutoff` | `5.0` Å | Heavy-atom distance cutoff for paratope contacts |
-| `--min-contact-residues` | `5` | Minimum VHH residues in contact to accept a chain as antigen |
-| `--overwrite-output` | off | Allow overwriting existing output/rejected CSVs |
-
-**What it checks:**
-
-1. **VHH identification** via ANARCI — rejects chains whose length, CDR3, or J-motif look malformed (catches truncated constructs like 7F1G's "AGR" CDR3). The J-motif regex is `[WRK]G[x]GT`, not the textbook-strict `WG[x]GT`: a diagnostic pass over the post-DiffAb slice found 166/178 `no_vhh` rejections were real VHH chains with a W→R (or W→K) substitution at the first FR4 residue (e.g. `...YAYRGQGTQVTVSS`). These are complete, correctly-folded VHH domains with a known-rare substitution at an otherwise highly-conserved position; the strict regex was mis-rejecting them as truncated. Truncated constructs still fail because they lack any variant of the motif.
-2. **VHH chain picking** — when multiple VH-type chains exist, picks in this priority order: (a) any chain whose letter appears in the CSV's `H_Chain Auth Asym ID` column — this column is comma-separated for homodimers / multi-copy assemblies (e.g. `"B, D, F, H"`, or up to 16 letters for 8AIX), and `_normalize_csv_letter` splits it into a set before matching; (b) the chain whose ATOM-derived sequence exactly matches the CSV's `Ab/Nano H_Chain AA`; (c) otherwise rejects the row as `ambiguous_vhh` rather than guess. This keeps the curated set small but confident; the prior heuristic (pick shortest) was dropped because empirically it disagreed with ANDD's annotation in 94% of ambiguous rows, and downstream DPO training needs certainty about which chain is the VHH.
-3. **Priority-sorted per-PDB dedup** — within each PDB, retains the row whose `Predicted_or_Not` is `real` > `\` > `predicted`, so a `predicted` row is never picked when a `real` alternative exists.
-4. **Antigen identification via contact geometry** — a non-VHH chain is called an antigen only if ≥ `--min-contact-residues` of its heavy atoms are within `--contact-cutoff` Å of the VHH. **All VH-type chains are excluded from antigen scoring**, not just the picked VHH — this prevents multi-VHH assemblies, VHH–Fab complexes, and anti-idiotypic pairs from being mis-labelled as antibody–antigen complexes (observed in ~20% of ANDD VHH PDBs in the post-DiffAb subset).
-
-**Rejection reasons** (written to `--rejected-csv` with `curation_status` column):
-
-| Status | Meaning |
-|---|---|
-| `load_failed` | PDB missing on disk or Biopython parse error |
-| `no_vhh` | No chain passed the ANARCI / length / CDR3 / J-motif gates |
-| `ambiguous_vhh` | Multiple VH candidates and no reliable hint — none of the letters in the CSV's `H_Chain Auth Asym ID` list match a candidate, and the CSV sequence did not match any candidate exactly. Rejected rather than guessed |
-| `no_antigen` | No non-VH chain passed the contact threshold — typically a VHH-only assembly |
-
-**Output columns added** (alongside the original ANDD schema):
-
-- `curation_vhh_chain_original`, `curation_antigen_chains_original` — the CSV's original annotations, preserved for audit.
-- `curation_vhh_contacts_per_chain` — JSON map `{chain_id: contact_count}` for the full contact profile.
-- `curation_status`, `curation_notes` — outcome and rationale.
-
-**Observed yield on the post-DiffAb slice** (561 input rows):
-
-| Outcome | Rows |
-|---|---|
-| `ok` (curated) | 465 |
-| `no_vhh` | 36 |
-| `ambiguous_vhh` | 32 |
-| `no_antigen` | 28 |
-
-Before the J-motif relaxation and homodimer letter-split, the same input produced only 236 curated rows (202 `no_vhh` from W→R FR4 variants, 107 `ambiguous_vhh` from comma-separated homodimer annotations the script couldn't parse). Neither change relaxes the biological certainty bar — they fix misclassifications of rows whose CSV annotation was consistent with the structure all along.
+> Licensed CC-BY-NC 4.0.
